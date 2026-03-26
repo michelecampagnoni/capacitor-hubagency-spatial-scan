@@ -71,7 +71,7 @@ class SpatialScanPlugin : Plugin() {
     fun startScan(call: PluginCall) {
         val enableDepth = call.getBoolean("enableDepth", true) ?: true
 
-        if (getPermissionState("camera").toString() != "GRANTED") {
+        if (getPermissionState("camera") != com.getcapacitor.PermissionState.GRANTED) {
             call.reject("Permesso camera non concesso", "PERMISSION_DENIED")
             return
         }
