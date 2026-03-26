@@ -1,5 +1,7 @@
 package it.hubagency.spatialscan
 
+import android.os.Handler
+import android.os.Looper
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -52,7 +54,7 @@ class SpatialScanPlugin : Plugin() {
     }
 
     @PluginMethod
-    fun requestPermissions(call: PluginCall) {
+    override fun requestPermissions(call: PluginCall) {
         requestPermissionForAlias("camera", call, "cameraPermissionCallback")
     }
 
@@ -74,7 +76,7 @@ class SpatialScanPlugin : Plugin() {
             return
         }
 
-        activity.runOnUiThread {
+        Handler(Looper.getMainLooper()).post {
             try {
                 scanManager.startScan(enableDepth)
                 call.resolve()
