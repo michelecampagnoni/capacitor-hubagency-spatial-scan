@@ -1,8 +1,7 @@
 package it.hubagency.spatialscan
 
-import android.os.Handler
-import android.os.Looper
-import com.getcapacitor.JSArray
+import android.content.Intent
+import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -18,39 +17,32 @@ import com.getcapacitor.annotation.Permission
 )
 class SpatialScanPlugin : Plugin() {
 
-    private lateinit var scanManager: SpatialScanManager
-
     override fun load() {
-        scanManager = SpatialScanManager(context)
-
-        scanManager.onTrackingStateChanged = { trackingState, pauseReason ->
-            val data = JSObject().apply {
+        // Propaga eventi dalla ScanningActivity ai listener JS
+        ScanningActivity.onFrameUpdate = { frameData ->
+            notifyListeners("onFrameUpdate", JSObject().apply {
+                put("trackingState",       frameData.trackingState)
+                put("planesDetected",      frameData.planesDetected)
+                put("wallsDetected",       frameData.wallsDetected)
+                put("coverageEstimate",    frameData.coverageEstimate)
+                put("scanDurationSeconds", frameData.scanDurationSeconds)
+            })
+        }
+        ScanningActivity.onTrackingStateChanged = { trackingState, pauseReason ->
+            notifyListeners("onTrackingStateChanged", JSObject().apply {
                 put("trackingState", trackingState)
                 pauseReason?.let { put("pauseReason", it) }
-            }
-            notifyListeners("onTrackingStateChanged", data)
-        }
-
-        scanManager.onFrameUpdate = { frameData ->
-            val data = JSObject().apply {
-                put("trackingState", frameData.trackingState)
-                put("planesDetected", frameData.planesDetected)
-                put("wallsDetected", frameData.wallsDetected)
-                put("coverageEstimate", frameData.coverageEstimate)
-                put("scanDurationSeconds", frameData.scanDurationSeconds)
-            }
-            notifyListeners("onFrameUpdate", data)
+            })
         }
     }
 
     @PluginMethod
     fun isSupported(call: PluginCall) {
-        val result = scanManager.checkSupport()
-        val ret = JSObject().apply {
+        val result = SpatialScanManager(context).checkSupport()
+        call.resolve(JSObject().apply {
             put("supported", result.supported)
             result.reason?.let { put("reason", it) }
-        }
-        call.resolve(ret)
+        })
     }
 
     @PluginMethod
@@ -60,11 +52,9 @@ class SpatialScanPlugin : Plugin() {
 
     @com.getcapacitor.annotation.PermissionCallback
     private fun cameraPermissionCallback(call: PluginCall) {
-        val status = getPermissionState("camera")
-        val ret = JSObject().apply {
-            put("camera", status.toString().lowercase())
-        }
-        call.resolve(ret)
+        call.resolve(JSObject().apply {
+            put("camera", getPermissionState("camera").toString().lowercase())
+        })
     }
 
     @PluginMethod
@@ -76,40 +66,57 @@ class SpatialScanPlugin : Plugin() {
             return
         }
 
-        Handler(Looper.getMainLooper()).post {
-            try {
-                scanManager.startScan(enableDepth)
-                call.resolve()
-            } catch (e: ScanException) {
-                call.reject(e.message, e.errorCode)
-            }
-        }
+        // Pulisce risultato precedente non consumato
+        ScanningActivity.pendingResult = null
+
+        val intent = Intent(context, ScanningActivity::class.java)
+        intent.putExtra("enableDepth", enableDepth)
+        intent.addFlags(FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+
+        // Risolve subito: il risultato arriva tramite stopScan()
+        call.resolve()
     }
 
     @PluginMethod
     fun stopScan(call: PluginCall) {
-        try {
-            val result = scanManager.buildFinalResult(context)
-            call.resolve(result)
-        } catch (e: Exception) {
-            call.reject("Errore interno: ${e.message}", "INTERNAL_ERROR")
+        // Caso 1: utente ha già premuto "Ferma" nell'Activity prima di questa chiamata
+        val stored = ScanningActivity.pendingResult
+        if (stored != null) {
+            ScanningActivity.pendingResult = null
+            call.resolve(stored)
+            return
         }
+
+        // Caso 2: Activity ancora in esecuzione → richiedi stop e attendi il risultato
+        val scanActivity = ScanningActivity.instance
+        if (scanActivity == null) {
+            call.reject("Nessuna scansione in corso", "SESSION_FAILED")
+            return
+        }
+
+        ScanningActivity.onScanResult = { result ->
+            ScanningActivity.onScanResult = null
+            call.resolve(result)
+        }
+        scanActivity.requestStop()
     }
 
     @PluginMethod
     fun cancelScan(call: PluginCall) {
-        scanManager.cancelScan()
+        ScanningActivity.pendingResult = null
+        ScanningActivity.instance?.cancelScanAndFinish()
         call.resolve()
     }
 
     @PluginMethod
     fun getScanStatus(call: PluginCall) {
-        val ret = JSObject().apply {
-            put("isScanning", scanManager.isCurrentlyScanning())
-            put("trackingState", "STOPPED")
-            put("planesDetected", 0)
-            put("scanDurationSeconds", scanManager.getScanDurationSeconds())
-        }
-        call.resolve(ret)
+        val isActive = ScanningActivity.instance != null
+        call.resolve(JSObject().apply {
+            put("isScanning",          isActive)
+            put("trackingState",       if (isActive) "TRACKING" else "STOPPED")
+            put("planesDetected",      0)
+            put("scanDurationSeconds", 0.0)
+        })
     }
 }

@@ -16,6 +16,7 @@ class SpatialScanManager(private val context: Context) {
 
     private val planeProcessor = PlaneProcessor()
     private val wallDetector = WallDetector()
+    private val depthProcessor = DepthProcessor()
     private var depthApiAvailable = false
 
     var onTrackingStateChanged: ((String, String?) -> Unit)? = null
@@ -76,6 +77,7 @@ class SpatialScanManager(private val context: Context) {
         isScanning.set(true)
         scanStartTime = System.currentTimeMillis()
         planeProcessor.reset()
+        depthProcessor.reset()
 
         frameThread = Thread { frameLoop() }.apply {
             name = "spatial-scan-frame-loop"
@@ -96,6 +98,7 @@ class SpatialScanManager(private val context: Context) {
 
                 val planes = frame.getUpdatedTrackables(Plane::class.java)
                 planeProcessor.updatePlanes(planes)
+                if (depthApiAvailable) depthProcessor.processFrame(frame)
 
                 if (now - lastEventTime >= 1000L) {
                     lastEventTime = now
@@ -144,14 +147,17 @@ class SpatialScanManager(private val context: Context) {
         session = null
 
         val walls = wallDetector.extractWalls(allPlaneData.filter { it.isWall() })
+        val refinedWalls = if (depthApiAvailable && depthProcessor.getAccumulatedPointCount() > 50) {
+            depthProcessor.extractWallSegmentsFromDepth(walls)
+        } else walls
         val floorArea = planeProcessor.getFloor()?.area?.toDouble() ?: 0.0
-        val roomDimensions = wallDetector.calculateRoomDimensions(walls, floorArea)
+        val roomDimensions = wallDetector.calculateRoomDimensions(refinedWalls, floorArea)
 
         val arcoreVersion = try {
             context.packageManager.getPackageInfo("com.google.ar.core", 0).versionName ?: "unknown"
         } catch (e: Exception) { "unknown" }
 
-        return if (walls.isEmpty()) {
+        return if (refinedWalls.isEmpty()) {
             JSObject().apply {
                 put("success", false)
                 put("error", "TRACKING_INSUFFICIENT")
@@ -162,9 +168,9 @@ class SpatialScanManager(private val context: Context) {
             }
         } else {
             val wallsArray = JSArray()
-            walls.forEach { wall -> wallsArray.put(wallToJSObject(wall)) }
+            refinedWalls.forEach { wall -> wallsArray.put(wallToJSObject(wall)) }
 
-            val floorOutline = wallDetector.buildRoomOutline(walls)
+            val floorOutline = wallDetector.buildRoomOutline(refinedWalls)
             val floorObj = if (floorOutline.isNotEmpty()) {
                 JSObject().apply {
                     val vArr = JSArray()
@@ -185,7 +191,7 @@ class SpatialScanManager(private val context: Context) {
                     put("area", roomDimensions.area)
                     put("perimeter", roomDimensions.perimeter)
                 })
-                put("scanMetadata", buildMetadata(elapsed, totalPlanes, walls.size, arcoreVersion))
+                put("scanMetadata", buildMetadata(elapsed, totalPlanes, refinedWalls.size, arcoreVersion))
             }
         }
     }
@@ -198,6 +204,7 @@ class SpatialScanManager(private val context: Context) {
         try { session?.pause(); session?.close() } catch (e: Exception) { }
         session = null
         planeProcessor.reset()
+        depthProcessor.reset()
     }
 
     fun isCurrentlyScanning() = isScanning.get()

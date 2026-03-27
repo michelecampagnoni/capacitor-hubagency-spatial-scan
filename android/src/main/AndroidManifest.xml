@@ -9,6 +9,12 @@
         <meta-data
             android:name="com.google.ar.core"
             android:value="optional" />
+
+        <activity
+            android:name="it.hubagency.spatialscan.ScanningActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|uiMode" />
     </application>
 
 </manifest>
