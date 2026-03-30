@@ -7,9 +7,24 @@ class WallDetector {
     fun extractWalls(planes: List<PlaneData>): List<Wall> {
         return planes
             .filter { it.isWall() }
-            .filter { it.area > 0.2f }
-            .filter { it.extentX > 0.3f }
+            .filter { it.area > 1.2f }       // almeno 1.2 m² — filtra mobili e pannelli piccoli
+            .filter { it.extentX > 0.8f }    // almeno 80cm di larghezza
+            .filter { it.extentZ > 1.4f }    // almeno 1.4m di altezza — filtra superfici basse
+            .filter { isTrulyVertical(it) }  // normale del piano approssimativamente orizzontale
             .mapNotNull { extractWall(it) }
+    }
+
+    /**
+     * Una parete reale ha la normale superficiale orientata orizzontalmente.
+     * Controlla che la componente Y della normale (asse Y del piano = normale alla superficie)
+     * sia < 0.35 (entro ~20 gradi dalla verticale perfetta).
+     * Filtra: superfici inclinate (totem, espositori), pavimenti mal classificati come VERTICAL.
+     */
+    private fun isTrulyVertical(plane: PlaneData): Boolean {
+        val pose = plane.centerPose
+        // L'asse Y del piano è la normale alla superficie
+        val worldY = pose.rotateVector(floatArrayOf(0f, 1f, 0f, 0f))
+        return abs(worldY[1]) < 0.35f
     }
 
     private fun extractWall(plane: PlaneData): Wall? {

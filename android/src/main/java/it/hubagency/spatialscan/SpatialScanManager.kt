@@ -97,7 +97,7 @@ class SpatialScanManager(private val context: Context) {
                 val now = System.currentTimeMillis()
 
                 val planes = frame.getUpdatedTrackables(Plane::class.java)
-                planeProcessor.updatePlanes(planes)
+                planeProcessor.refreshPlanes(planes)
                 if (depthApiAvailable) depthProcessor.processFrame(frame)
 
                 if (now - lastEventTime >= 1000L) {
@@ -146,11 +146,11 @@ class SpatialScanManager(private val context: Context) {
         session?.close()
         session = null
 
-        val walls = wallDetector.extractWalls(allPlaneData.filter { it.isWall() })
+        val walls = wallDetector.extractWalls(planeProcessor.getActiveWallData())
         val refinedWalls = if (depthApiAvailable && depthProcessor.getAccumulatedPointCount() > 50) {
             depthProcessor.extractWallSegmentsFromDepth(walls)
         } else walls
-        val floorArea = planeProcessor.getFloor()?.area?.toDouble() ?: 0.0
+        val floorArea = planeProcessor.getFloor()?.let { it.extentX * it.extentZ }?.toDouble() ?: 0.0
         val roomDimensions = wallDetector.calculateRoomDimensions(refinedWalls, floorArea)
 
         val arcoreVersion = try {

@@ -34,6 +34,10 @@ class SpatialScanPlugin : Plugin() {
                 pauseReason?.let { put("pauseReason", it) }
             })
         }
+        // Emesso automaticamente quando la scansione termina, anche se JS non ha chiamato stopScan()
+        ScanningActivity.onScanComplete = { result ->
+            notifyListeners("onScanComplete", result)
+        }
     }
 
     @PluginMethod

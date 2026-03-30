@@ -24,6 +24,10 @@ export interface ScanResult {
   floor: FloorPolygon | null;
   roomDimensions: RoomDimensions;
   scanMetadata: ScanMetadata;
+  /** Path "file://..." alla planimetria PNG generata dal plugin */
+  floorPlanPath?: string;
+  /** Path "file://..." al modello 3D GLB (binary GLTF 2.0) generato dal plugin */
+  glbPath?: string;
 }
 
 export interface Wall {
