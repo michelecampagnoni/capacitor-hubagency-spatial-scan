@@ -131,9 +131,11 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     private var heightBufIdx  = 0; private var heightBufFill = 0
 
     // ── Freeze-at-close (anti-drift) ──────────────────────────────────────────
-    // Al close: snapshot world coords calcolate dall'anchor. Immutabile.
-    @Volatile private var frozenPolygon: List<FloatArray>? = null
-    @Volatile private var frozenFloorY:  Float?           = null
+    @Volatile private var frozenPolygon:    List<FloatArray>? = null
+    @Volatile private var frozenFloorY:     Float?            = null
+    // Post-scan rectified polygon (RoomRectifier output). Null until buildRoomModel() runs.
+    // Used as source of truth for export; frozenPolygon preserved as raw scan reference.
+    @Volatile private var rectifiedPolygon: List<FloatArray>? = null
 
 
 
@@ -779,7 +781,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 sessionCreated = true
                 scanStartTime  = System.currentTimeMillis()
                 floorAnchor.reset(); pcSampler.reset(); perimeterCapture.reset()
-                frozenPolygon = null; frozenFloorY = null
+                frozenPolygon = null; frozenFloorY = null; rectifiedPolygon = null
                 lastReticleWorld = null; lastLivePreview = null; lastReticleWorldFree = null
                 reticleBufIdx = 0; reticleBufFill = 0
                 heightBufIdx  = 0; heightBufFill  = 0
@@ -1037,8 +1039,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     // ── Opening placement logic ───────────────────────────────────────────────
 
     private fun buildRoomModel() {
-        val poly = frozenPolygon ?: perimeterCapture.getPolygon()
-        roomModel = RoomModel.fromPolygon(poly, wallHeightPreview)
+        val rawPoly = frozenPolygon ?: perimeterCapture.getPolygon()
+        val result  = RoomRectifier.rectify(rawPoly)
+        rectifiedPolygon = result.polygon   // may equal rawPoly if nothing was snapped
+        roomModel = RoomModel.fromPolygon(result.polygon, wallHeightPreview)
     }
 
     private fun enterOpeningMode() {
@@ -1323,7 +1327,9 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val elapsed = (System.currentTimeMillis() - scanStartTime) / 1000.0
         val version = arcoreVersion()
         val polygon = perimeterCapture.getPolygon()
-        val finalPolygon = frozenPolygon?.takeIf { it.size == polygon.size } ?: polygon
+        val finalPolygon = rectifiedPolygon
+            ?: frozenPolygon?.takeIf { it.size == polygon.size }
+            ?: polygon
         val ptCount = polygon.size
 
         if (finalPolygon == null || finalPolygon.size < 3) {
