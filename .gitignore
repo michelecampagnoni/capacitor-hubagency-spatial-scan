@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Android build outputs
+**/build/
+**/local.properties
+**/.gradle/
+**/captures/
+**/.externalNativeBuild/
+**/.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Node / npm
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Capacitor
+capacitor-test-app/android/app/src/main/assets/public/
+
+# Build artifacts folder — tracked separately as release assets
+# builds/ is intentionally NOT ignored (we store APKs/zips/notes there)
