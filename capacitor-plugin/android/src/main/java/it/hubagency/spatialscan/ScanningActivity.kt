@@ -1088,11 +1088,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             height          = kind.defaultHeight
         )
         wall.clampOpening(opening)
-
-        // Rimuove eventuale apertura precedente in editing sullo stesso muro
-        editingOpening?.let { prev ->
-            if (prev.wallId == wid) wall.openings.remove(prev)
-        }
         wall.openings.add(opening)
         editingOpening = opening
 
@@ -1110,7 +1105,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     private fun refreshOpeningValues(o: OpeningModel) {
-        openingPosText.text    = "${"%.2f".format(o.offsetAlongWall)}m"
+        val wallLen = roomModel?.walls?.find { it.id == o.wallId }?.length
+        openingPosText.text    = if (wallLen != null)
+            "${"%.2f".format(o.offsetAlongWall)}m / ${"%.2f".format(wallLen)}m"
+        else "${"%.2f".format(o.offsetAlongWall)}m"
         openingWidthText.text  = "${"%.2f".format(o.width)}m"
         openingHeightText.text = "${"%.2f".format(o.height)}m"
         openingBottomText.text = "${"%.2f".format(o.bottom)}m"

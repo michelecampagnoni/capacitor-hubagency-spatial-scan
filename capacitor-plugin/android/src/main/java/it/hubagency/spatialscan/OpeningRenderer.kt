@@ -19,8 +19,13 @@ import java.nio.FloatBuffer
 class OpeningRenderer {
 
     companion object {
-        private val COLOR_WALL_HOVER     = floatArrayOf(1.00f, 0.90f, 0.00f, 0.55f)  // giallo hover
-        private val COLOR_WALL_SELECTED  = floatArrayOf(0.00f, 0.85f, 1.00f, 0.70f)  // ciano selezione
+        // Hover: ciano forte — fill leggero + outline pieno
+        private val COLOR_HOVER_FILL    = floatArrayOf(0.00f, 0.90f, 1.00f, 0.18f)
+        private val COLOR_HOVER_OUTLINE = floatArrayOf(0.00f, 0.90f, 1.00f, 1.00f)
+        // Selected: fucsia/viola — fill più visibile + outline acceso
+        private val COLOR_SEL_FILL      = floatArrayOf(0.85f, 0.10f, 0.95f, 0.28f)
+        private val COLOR_SEL_OUTLINE   = floatArrayOf(0.95f, 0.20f, 1.00f, 1.00f)
+
         private val COLOR_DOOR           = floatArrayOf(0.90f, 0.55f, 0.10f, 0.80f)  // arancio porta
         private val COLOR_WINDOW         = floatArrayOf(0.30f, 0.70f, 1.00f, 0.75f)  // azzurro finestra
         private val COLOR_FRENCH_DOOR    = floatArrayOf(0.60f, 0.30f, 0.90f, 0.80f)  // viola portafinestra
@@ -87,8 +92,8 @@ class OpeningRenderer {
 
         for (wall in roomModel.walls) {
             when (wall.id) {
-                selectedWallId -> drawWallHighlight(wall, baseY, COLOR_WALL_SELECTED)
-                hoveredWallId  -> drawWallHighlight(wall, baseY, COLOR_WALL_HOVER)
+                selectedWallId -> drawWallHighlight(wall, baseY, COLOR_SEL_FILL,   COLOR_SEL_OUTLINE,   7f)
+                hoveredWallId  -> drawWallHighlight(wall, baseY, COLOR_HOVER_FILL, COLOR_HOVER_OUTLINE, 5f)
             }
             for (opening in wall.openings) {
                 drawOpening(wall, baseY, opening)
@@ -104,19 +109,27 @@ class OpeningRenderer {
     // baseY = floor Y in world space (es. -0.93). Le coordinate Y del modello
     // sono floor-relative (0 = pavimento), quindi world_Y = baseY + model_Y.
 
-    private fun drawWallHighlight(wall: WallModel, baseY: Float, color: FloatArray) {
+    private fun drawWallHighlight(
+        wall: WallModel, baseY: Float,
+        fillColor: FloatArray, outlineColor: FloatArray, lineW: Float
+    ) {
         val sx = wall.start[0]; val sz = wall.start[2]
         val ex = wall.end[0];   val ez = wall.end[2]
         val yFloor = baseY
         val yTop   = baseY + wall.height
-        setColor(color)
-        GLES20.glLineWidth(4f)
-        drawPrimitive(GLES20.GL_LINE_LOOP, floatArrayOf(
+        val quad = floatArrayOf(
             sx, yFloor, sz,
             ex, yFloor, ez,
             ex, yTop,   ez,
             sx, yTop,   sz
-        ), 4)
+        )
+        // Fill semitrasparente
+        setColor(fillColor)
+        drawPrimitive(GLES20.GL_TRIANGLE_FAN, quad, 4)
+        // Outline pieno e spesso
+        setColor(outlineColor)
+        GLES20.glLineWidth(lineW)
+        drawPrimitive(GLES20.GL_LINE_LOOP, quad, 4)
     }
 
     // ── Opening box ───────────────────────────────────────────────────────────
