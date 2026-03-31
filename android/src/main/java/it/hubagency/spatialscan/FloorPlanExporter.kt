@@ -4,6 +4,8 @@ import android.graphics.*
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
+import kotlin.math.sqrt
+import kotlin.math.pow
 
 /**
  * Genera una planimetria PNG (vista dall'alto) dai dati delle pareti.
@@ -51,9 +53,16 @@ object FloorPlanExporter {
         fun toPixX(x: Float) = MARGIN + (x - minX) * scale
         fun toPixZ(z: Float) = MARGIN + (z - minZ) * scale
 
+        // Centroide pixel-space per direzione outward delle quote
+        val centroidPx = PointF(
+            walls.flatMap { listOf(toPixX(it.startX), toPixX(it.endX)) }.average().toFloat(),
+            walls.flatMap { listOf(toPixZ(it.startZ), toPixZ(it.endZ)) }.average().toFloat()
+        )
+
         drawGrid(canvas, minX, maxX, minZ, maxZ, scale, ::toPixX, ::toPixZ)
         drawFloorFill(canvas, walls, ::toPixX, ::toPixZ)
         drawWalls(canvas, walls, ::toPixX, ::toPixZ)
+        drawWallQuotes(canvas, walls, centroidPx, ::toPixX, ::toPixZ)
         drawDimensionLabels(canvas, roomDim, minX, maxX, minZ, maxZ, ::toPixX, ::toPixZ)
         drawHeader(canvas, walls, roomDim)
         drawScaleBar(canvas, scale)
@@ -183,6 +192,117 @@ object FloorPlanExporter {
             style      = Paint.Style.STROKE
             pathEffect = DashPathEffect(floatArrayOf(10f, 6f), 0f)
         })
+    }
+
+    /**
+     * Disegna quote per-parete (dimensioni individuali dei lati).
+     *
+     * Logica di selezione pareti:
+     *  - Skip se lunghezza pixel < MIN_WALL_PX (pareti troppo corte → testo illeggibile)
+     *  - Direzione outward calcolata via centroide pixel-space: la linea di quota
+     *    viene proiettata all'esterno della stanza di OFFSET_PX pixel
+     *  - Skip se la linea di quota esce dall'area del bitmap (pareti sul bordo estremo)
+     *
+     * Anti-crowding:
+     *  - Ogni label occupa un RectF tracciato in placedLabels
+     *  - Se il nuovo label si sovrappone a uno esistente: skip
+     *  - Le pareti sono processate in ordine di lunghezza decrescente → le pareti
+     *    più lunghe hanno priorità e vengono quotate per prime
+     */
+    private fun drawWallQuotes(
+        canvas:     Canvas,
+        walls:      List<ExportWall>,
+        centroid:   PointF,
+        toPixX:     (Float) -> Float,
+        toPixZ:     (Float) -> Float
+    ) {
+        val MIN_WALL_PX = 70f   // pixel minimi per quotare (≈ 30-50cm a scala tipica)
+        val OFFSET_PX   = 48f   // distanza parete → linea di quota
+        val TICK_PX     = 9f    // mezza-lunghezza dei tick perpendicolari
+        val BITMAP_PAD  = 14f   // margine minimo dal bordo bitmap
+
+        val linePaint = Paint().apply {
+            color       = Color.argb(190, 25, 55, 145)
+            strokeWidth = 1.8f
+            style       = Paint.Style.STROKE
+            isAntiAlias = true
+        }
+        val textPaint = Paint().apply {
+            color       = Color.argb(230, 18, 48, 130)
+            textSize    = 24f
+            typeface    = Typeface.DEFAULT_BOLD
+            textAlign   = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        val bgPaint = Paint().apply {
+            color = Color.argb(215, 255, 255, 255)
+            style = Paint.Style.FILL
+        }
+
+        // Priorità alle pareti più lunghe
+        val sorted = walls.sortedByDescending { it.length }
+        val placedLabels = mutableListOf<RectF>()
+
+        for (wall in sorted) {
+            val p0x = toPixX(wall.startX); val p0z = toPixZ(wall.startZ)
+            val p1x = toPixX(wall.endX);   val p1z = toPixZ(wall.endZ)
+
+            val wallPxLen = sqrt((p1x - p0x).pow(2) + (p1z - p0z).pow(2))
+            if (wallPxLen < MIN_WALL_PX) continue
+
+            // Direzione unitaria della parete nello spazio pixel
+            val wdx = (p1x - p0x) / wallPxLen
+            val wdz = (p1z - p0z) / wallPxLen
+
+            // Normale candidata: ruota dir di 90° CCW → (-dz, dx)
+            val ndx = -wdz;  val ndz = wdx
+
+            // Outward: la normale deve puntare LONTANO dal centroide
+            val midPx = (p0x + p1x) / 2f; val midPz = (p0z + p1z) / 2f
+            val toCx = midPx - centroid.x; val toCz = midPz - centroid.y
+            // dot(n, toC) > 0 → stessa direzione → la normale punta verso l'esterno
+            val dot  = ndx * toCx + ndz * toCz
+            val outX = if (dot >= 0f) ndx else -ndx
+            val outZ = if (dot >= 0f) ndz else -ndz
+
+            // Punti della linea di quota (offset outward dai vertici parete)
+            val d0x = p0x + outX * OFFSET_PX; val d0z = p0z + outZ * OFFSET_PX
+            val d1x = p1x + outX * OFFSET_PX; val d1z = p1z + outZ * OFFSET_PX
+            val dmx = (d0x + d1x) / 2f;       val dmz = (d0z + d1z) / 2f
+
+            // Skip se la linea di quota esce dal bitmap
+            if (d0x < BITMAP_PAD || d0x > BMP_SIZE - BITMAP_PAD) continue
+            if (d0z < BITMAP_PAD || d0z > BMP_SIZE - BITMAP_PAD) continue
+            if (d1x < BITMAP_PAD || d1x > BMP_SIZE - BITMAP_PAD) continue
+            if (d1z < BITMAP_PAD || d1z > BMP_SIZE - BITMAP_PAD) continue
+
+            // Bounding box del testo — anti-crowding
+            val label = "%.2fm".format(wall.length)
+            val tw = textPaint.measureText(label)
+            val th = textPaint.textSize
+            val labelRect = RectF(dmx - tw / 2f - 7f, dmz - th, dmx + tw / 2f + 7f, dmz + 6f)
+            if (placedLabels.any { RectF.intersects(it, labelRect) }) continue
+            placedLabels.add(labelRect)
+
+            // Linee di raccordo (parete → linea di quota)
+            canvas.drawLine(p0x, p0z, d0x, d0z, linePaint)
+            canvas.drawLine(p1x, p1z, d1x, d1z, linePaint)
+
+            // Linea di quota principale
+            canvas.drawLine(d0x, d0z, d1x, d1z, linePaint)
+
+            // Tick perpendicolari ai capi (lungo la direzione della parete)
+            canvas.drawLine(
+                d0x - wdx * TICK_PX, d0z - wdz * TICK_PX,
+                d0x + wdx * TICK_PX, d0z + wdz * TICK_PX, linePaint)
+            canvas.drawLine(
+                d1x - wdx * TICK_PX, d1z - wdz * TICK_PX,
+                d1x + wdx * TICK_PX, d1z + wdz * TICK_PX, linePaint)
+
+            // Label con sfondo bianco
+            canvas.drawRoundRect(labelRect, 4f, 4f, bgPaint)
+            canvas.drawText(label, dmx, dmz, textPaint)
+        }
     }
 
     private fun drawDimensionLabels(
