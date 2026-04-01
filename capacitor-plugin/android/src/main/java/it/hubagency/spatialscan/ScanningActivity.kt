@@ -34,11 +34,13 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.app.AlertDialog
 import android.widget.*
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
+import java.util.UUID
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
@@ -158,6 +160,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var selectedWallId: String?       = null
     @Volatile private var editingOpening: OpeningModel? = null
     @Volatile private var openingMode     = false
+
+    // ── Room history ──────────────────────────────────────────────────────────
+    /** Room name provided by user in the naming dialog before export. */
+    private var pendingRoomName: String = "Stanza"
 
     // ── Legacy (non attivi) ───────────────────────────────────────────────────
     @Suppress("unused") private val confirmedWallRenderer  = ConfirmedWallRenderer()
@@ -703,10 +709,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         actionBtn.setOnClickListener {
             when {
                 openingMode -> {
-                    // In opening mode: "Esporta" → genera risultato
-                    actionBtn.isEnabled = false
-                    actionBtn.text = "Elaborazione…"
-                    glSurfaceView.queueEvent { doStopScan() }
+                    // In opening mode: "Esporta" → chiedi nome stanza poi genera risultato
+                    showRoomNamingDialog()
                 }
                 perimeterCapture.state == PerimeterCapture.State.CLOSED &&
                     roomModel != null -> {
@@ -1294,6 +1298,28 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
     // ── Stop / cancel ─────────────────────────────────────────────────────────
 
+    /** Shows a naming dialog; on confirm stores the name and proceeds to export. */
+    private fun showRoomNamingDialog() {
+        val input = EditText(this).apply {
+            hint    = "es. Salotto, Cucina, Camera…"
+            setText(pendingRoomName)
+            selectAll()
+            setSingleLine(true)
+            setPadding(48, 32, 48, 32)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Nome stanza")
+            .setView(input)
+            .setPositiveButton("Esporta") { _, _ ->
+                pendingRoomName = input.text.toString().trim().ifEmpty { "Stanza" }
+                actionBtn.isEnabled = false
+                actionBtn.text      = "Elaborazione…"
+                glSurfaceView.queueEvent { doStopScan() }
+            }
+            .setNegativeButton("Annulla", null)
+            .show()
+    }
+
     fun requestStop() { glSurfaceView.queueEvent { doStopScan() } }
 
     fun cancelScanAndFinish() {
@@ -1310,9 +1336,27 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     fun doStopScan() {
-        val result = buildResult()
+        val result        = buildResult()
+        val openingCount  = roomModel?.walls?.sumOf { it.openings.size } ?: 0
         session?.pause(); session?.close(); session = null
         mainHandler.post {
+            // Persist to local history (runs before finish; fast synchronous write)
+            if (result.getBoolean("success") == true) {
+                val dim = result.getJSObject("roomDimensions")
+                RoomHistoryManager.save(
+                    RoomRecord(
+                        id            = UUID.randomUUID().toString(),
+                        name          = pendingRoomName,
+                        timestamp     = System.currentTimeMillis(),
+                        area          = dim?.getDouble("area")   ?: 0.0,
+                        height        = dim?.getDouble("height") ?: 0.0,
+                        openingCount  = openingCount,
+                        floorPlanPath = result.getString("floorPlanPath"),
+                        glbPath       = result.getString("glbPath")
+                    ),
+                    this
+                )
+            }
             onScanComplete?.invoke(result)
             val cb = onScanResult
             if (cb != null) { cb(result); onScanResult = null }
