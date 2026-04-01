@@ -9,11 +9,16 @@ import kotlin.math.abs
  */
 
 data class ExportOpening(
-    val kind:            OpeningKind,
-    val offsetAlongWall: Float,
-    val width:           Float,
-    val bottom:          Float,
-    val height:          Float
+    val kind:                 OpeningKind,
+    val offsetAlongWall:      Float,
+    val width:                Float,
+    val bottom:               Float,
+    val height:               Float,
+    // ── Connection metadata (propagated from OpeningModel) ────────────────────
+    val isInternalConnection: Boolean = false,
+    val linkedRoomId:         String? = null,
+    val linkedOpeningId:      String? = null,
+    val connectionLabel:      String? = null
 )
 
 data class ExportWall(
@@ -51,7 +56,17 @@ class RoomExportData(
                     dirX     = wm.dirX,
                     dirZ     = wm.dirZ,
                     openings = wm.openings.map { o ->
-                        ExportOpening(o.kind, o.offsetAlongWall, o.width, o.bottom, o.height)
+                        ExportOpening(
+                            kind                 = o.kind,
+                            offsetAlongWall      = o.offsetAlongWall,
+                            width                = o.width,
+                            bottom               = o.bottom,
+                            height               = o.height,
+                            isInternalConnection = o.isInternalConnection,
+                            linkedRoomId         = o.linkedRoomId,
+                            linkedOpeningId      = o.linkedOpeningId,
+                            connectionLabel      = o.connectionLabel
+                        )
                     }
                 )
             }

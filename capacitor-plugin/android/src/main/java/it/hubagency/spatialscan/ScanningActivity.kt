@@ -35,6 +35,9 @@ import android.view.Surface
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.app.AlertDialog
+import android.content.res.ColorStateList
+import android.text.Editable
+import android.text.TextWatcher
 import android.widget.*
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
@@ -95,15 +98,18 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     private lateinit var qualityAlta:      TextView
 
     // ── UI: opening placement ─────────────────────────────────────────────────
-    private lateinit var openingPhaseBar:   LinearLayout   // "Aggiungi Aperture" header
-    private lateinit var openingTypeRow:    LinearLayout   // [Porta] [Finestra] [Portafinestra]
-    private lateinit var openingEditPanel:  LinearLayout   // stepper panel
-    private lateinit var openingEditTitle:  TextView
-    private lateinit var openingPosText:    TextView
-    private lateinit var openingWidthText:  TextView
-    private lateinit var openingHeightText: TextView
-    private lateinit var openingBottomRow:  LinearLayout   // solo per finestre
-    private lateinit var openingBottomText: TextView
+    private lateinit var openingPhaseBar:      LinearLayout   // "Aggiungi Aperture" header
+    private lateinit var openingTypeRow:       LinearLayout   // [Porta] [Finestra] [Portafinestra]
+    private lateinit var openingEditPanel:     LinearLayout   // stepper panel
+    private lateinit var openingEditTitle:     TextView
+    private lateinit var openingPosText:       TextView
+    private lateinit var openingWidthText:     TextView
+    private lateinit var openingHeightText:    TextView
+    private lateinit var openingBottomRow:     LinearLayout   // solo per finestre
+    private lateinit var openingBottomText:    TextView
+    private lateinit var connectionToggleRow:  LinearLayout   // checkbox + label input (porte/portefinestre)
+    private lateinit var connectionCheckbox:   android.widget.CheckBox
+    private lateinit var connectionLabelInput: android.widget.EditText
 
     // ── ARCore ───────────────────────────────────────────────────────────────
     private val backgroundRenderer = BackgroundRenderer()
@@ -394,6 +400,56 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         openingBottomText = addStepperRow(openingBottomRow, "Quota da terra", "−", "+",
             { adjustOpening(dB = -0.05f) }, { adjustOpening(dB = +0.05f) })
         openingEditPanel.addView(openingBottomRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        // Connection toggle (porte/portefinestre): "Collega un altro ambiente"
+        connectionToggleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+            visibility = android.view.View.GONE
+        }
+        connectionCheckbox = android.widget.CheckBox(this).apply {
+            text = "Collega un altro ambiente"
+            setTextColor(Color.argb(220, 180, 215, 255))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            buttonTintList = ColorStateList.valueOf(Color.argb(220, 100, 170, 255))
+        }
+        connectionLabelInput = android.widget.EditText(this).apply {
+            hint = "Nome ambiente collegato (es. Salotto)"
+            setHintTextColor(Color.argb(110, 160, 190, 255))
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setSingleLine(true)
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            visibility = android.view.View.GONE
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(4).toFloat()
+                setColor(Color.argb(55, 80, 120, 200))
+                setStroke(dp(1), Color.argb(110, 90, 150, 255))
+            }
+        }
+        connectionCheckbox.setOnCheckedChangeListener { _, checked ->
+            val o = editingOpening ?: return@setOnCheckedChangeListener
+            o.isInternalConnection = checked
+            connectionLabelInput.visibility =
+                if (checked) android.view.View.VISIBLE else android.view.View.GONE
+            if (!checked) { o.connectionLabel = null; connectionLabelInput.setText("") }
+        }
+        connectionLabelInput.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                val o = editingOpening ?: return
+                o.connectionLabel = s?.toString()?.trim()?.ifEmpty { null }
+            }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
+        connectionToggleRow.addView(connectionCheckbox, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        connectionToggleRow.addView(connectionLabelInput, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(4) })
+        openingEditPanel.addView(connectionToggleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         // Confirm / Delete row
@@ -1106,6 +1162,16 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         openingEditTitle.text       = o.kind.label
         openingBottomRow.visibility = if (o.kind == OpeningKind.WINDOW)
             android.view.View.VISIBLE else android.view.View.GONE
+        // Connection toggle: solo per porte e portefinestre (non finestre)
+        val canConnect = o.kind != OpeningKind.WINDOW
+        connectionToggleRow.visibility =
+            if (canConnect) android.view.View.VISIBLE else android.view.View.GONE
+        if (canConnect) {
+            connectionCheckbox.isChecked     = o.isInternalConnection
+            connectionLabelInput.visibility  =
+                if (o.isInternalConnection) android.view.View.VISIBLE else android.view.View.GONE
+            connectionLabelInput.setText(o.connectionLabel ?: "")
+        }
         openingEditPanel.visibility = android.view.View.VISIBLE
         openingTypeRow.visibility   = android.view.View.GONE
         refreshOpeningValues(o)
@@ -1439,13 +1505,17 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val openingsArr = JSArray().also { arr ->
             w.openings.forEach { o ->
                 arr.put(JSObject().apply {
-                    put("id",             o.id)
-                    put("wallId",         o.wallId)
-                    put("kind",           o.kind.name)
-                    put("offsetAlongWall", o.offsetAlongWall.toDouble())
-                    put("width",          o.width.toDouble())
-                    put("bottom",         o.bottom.toDouble())
-                    put("height",         o.height.toDouble())
+                    put("id",                  o.id)
+                    put("wallId",              o.wallId)
+                    put("kind",                o.kind.name)
+                    put("offsetAlongWall",     o.offsetAlongWall.toDouble())
+                    put("width",               o.width.toDouble())
+                    put("bottom",              o.bottom.toDouble())
+                    put("height",              o.height.toDouble())
+                    put("isInternalConnection", o.isInternalConnection)
+                    if (o.linkedRoomId    != null) put("linkedRoomId",    o.linkedRoomId)
+                    if (o.linkedOpeningId != null) put("linkedOpeningId", o.linkedOpeningId)
+                    if (o.connectionLabel != null) put("connectionLabel", o.connectionLabel)
                 })
             }
         }
