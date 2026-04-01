@@ -53,16 +53,10 @@ object FloorPlanExporter {
         fun toPixX(x: Float) = MARGIN + (x - minX) * scale
         fun toPixZ(z: Float) = MARGIN + (z - minZ) * scale
 
-        // Centroide pixel-space per direzione outward delle quote
-        val centroidPx = PointF(
-            walls.flatMap { listOf(toPixX(it.startX), toPixX(it.endX)) }.average().toFloat(),
-            walls.flatMap { listOf(toPixZ(it.startZ), toPixZ(it.endZ)) }.average().toFloat()
-        )
-
         drawGrid(canvas, minX, maxX, minZ, maxZ, scale, ::toPixX, ::toPixZ)
         drawFloorFill(canvas, walls, ::toPixX, ::toPixZ)
         drawWalls(canvas, walls, ::toPixX, ::toPixZ)
-        drawWallQuotes(canvas, walls, centroidPx, ::toPixX, ::toPixZ)
+        drawWallQuotes(canvas, walls, ::toPixX, ::toPixZ)
         drawDimensionLabels(canvas, roomDim, minX, maxX, minZ, maxZ, ::toPixX, ::toPixZ)
         drawHeader(canvas, walls, roomDim)
         drawScaleBar(canvas, scale)
@@ -199,8 +193,7 @@ object FloorPlanExporter {
      *
      * Logica di selezione pareti:
      *  - Skip se lunghezza pixel < MIN_WALL_PX (pareti troppo corte → testo illeggibile)
-     *  - Direzione outward calcolata via centroide pixel-space: la linea di quota
-     *    viene proiettata all'esterno della stanza di OFFSET_PX pixel
+     *  - Direzione outward da wall.normalX/normalZ (winding-order, corretto anche per concave)
      *  - Skip se la linea di quota esce dall'area del bitmap (pareti sul bordo estremo)
      *
      * Anti-crowding:
@@ -212,7 +205,6 @@ object FloorPlanExporter {
     private fun drawWallQuotes(
         canvas:     Canvas,
         walls:      List<ExportWall>,
-        centroid:   PointF,
         toPixX:     (Float) -> Float,
         toPixZ:     (Float) -> Float
     ) {
@@ -254,16 +246,10 @@ object FloorPlanExporter {
             val wdx = (p1x - p0x) / wallPxLen
             val wdz = (p1z - p0z) / wallPxLen
 
-            // Normale candidata: ruota dir di 90° CCW → (-dz, dx)
-            val ndx = -wdz;  val ndz = wdx
-
-            // Outward: la normale deve puntare LONTANO dal centroide
-            val midPx = (p0x + p1x) / 2f; val midPz = (p0z + p1z) / 2f
-            val toCx = midPx - centroid.x; val toCz = midPz - centroid.y
-            // dot(n, toC) > 0 → stessa direzione → la normale punta verso l'esterno
-            val dot  = ndx * toCx + ndz * toCz
-            val outX = if (dot >= 0f) ndx else -ndx
-            val outZ = if (dot >= 0f) ndz else -ndz
+            // Outward normal da winding order (corretto per stanze concave)
+            // wall.normalX/Z è già normalizzato e punta verso l'esterno della stanza
+            val outX = wall.normalX
+            val outZ = wall.normalZ
 
             // Punti della linea di quota (offset outward dai vertici parete)
             val d0x = p0x + outX * OFFSET_PX; val d0z = p0z + outZ * OFFSET_PX
