@@ -1,5 +1,6 @@
 package it.hubagency.spatialscan
 
+import android.util.Log
 import kotlin.math.*
 
 /**
@@ -58,21 +59,36 @@ object RoomRectifier {
         val longestIdx    = lengths.indices.maxByOrNull { lengths[it] } ?: 0
         val dominantAxis  = angles[longestIdx]
 
+        Log.d("RoomRectifier", "dominant axis: edge[$longestIdx] len=${
+            "%.2f".format(lengths[longestIdx])}m angle=${"%.1f".format(
+            Math.toDegrees(dominantAxis.toDouble()))}°")
+
         // ── 3. Snap eligible edges ────────────────────────────────────────────
         val snapRad       = Math.toRadians(SNAP_HARD_DEG.toDouble()).toFloat()
         val snappedAngles = angles.copyOf()
         var snappedCount  = 0
 
         for (i in 0 until n) {
-            if (lengths[i] < MIN_EDGE_M) continue
             val nearest = nearestAxisAngle(angles[i], dominantAxis)
             val dev     = angularDeviation(angles[i], nearest)
-            if (dev <= snapRad) {
+            val devDeg  = Math.toDegrees(dev.toDouble())
+            val action  = when {
+                lengths[i] < MIN_EDGE_M -> "SKIP(short)"
+                dev <= snapRad          -> "SNAP"
+                else                    -> "KEEP"
+            }
+            Log.d("RoomRectifier", "  edge[$i] len=${"%.2f".format(lengths[i])}m " +
+                "raw=${"%.1f".format(Math.toDegrees(angles[i].toDouble()))}° " +
+                "nearest=${"%.1f".format(Math.toDegrees(nearest.toDouble()))}° " +
+                "dev=${"%.2f".format(devDeg)}° → $action")
+            if (action == "SNAP") {
                 snappedAngles[i] = nearest
-                if (dev > 1e-5f) snappedCount++  // count only real moves
+                if (dev > 1e-5f) snappedCount++
             }
         }
 
+        Log.d("RoomRectifier", "snapped $snappedCount / $n edges. " +
+            "closure err after reconstruct will be logged below.")
         if (snappedCount == 0) return Result(polygon, false, 0, n)
 
         // ── 4. Reconstruct vertices greedily from v[0] ────────────────────────
@@ -96,6 +112,8 @@ object RoomRectifier {
             newX[i] += errX * t
             newZ[i] += errZ * t
         }
+
+        Log.d("RoomRectifier", "closure error: errX=${"%.4f".format(errX)}m errZ=${"%.4f".format(errZ)}m")
 
         val rectified = (0 until n).map { i ->
             floatArrayOf(newX[i], polygon[i][1], newZ[i])
