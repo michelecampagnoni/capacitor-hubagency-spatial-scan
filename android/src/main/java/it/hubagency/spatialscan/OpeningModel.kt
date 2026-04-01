@@ -20,7 +20,12 @@ data class OpeningModel(
     var offsetAlongWall: Float,   // meters from wall start (clamped within wall)
     var width:        Float,
     var bottom:       Float,      // meters from floor
-    var height:       Float
+    var height:       Float,
+    // ── Connection metadata ───────────────────────────────────────────────────
+    var isInternalConnection: Boolean = false, // true = collega un altro ambiente
+    var linkedRoomId:         String? = null,  // id stanza collegata (da RoomHistory), null = non risolto
+    var linkedOpeningId:      String? = null,  // id apertura corrispondente nell'altro ambiente, null = non risolto
+    var connectionLabel:      String? = null   // etichetta libera (es. "→ Salotto")
 )
 
 data class WallModel(
