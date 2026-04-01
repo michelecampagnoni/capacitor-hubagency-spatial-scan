@@ -72,6 +72,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         @Volatile var onScanComplete:         ((JSObject) -> Unit)? = null
         @Volatile var onFrameUpdate:          ((FrameUpdateData) -> Unit)? = null
         @Volatile var onTrackingStateChanged: ((String, String?) -> Unit)? = null
+        /** Seed from the previous room scan; consumed by spawnOpening() on first use. */
+        @Volatile var pendingNextRoomSeed:    NextRoomSeed?     = null
     }
 
     // ── UI: perimeter capture ─────────────────────────────────────────────────
@@ -1140,21 +1142,31 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val rm   = roomModel      ?: return
         val wall = rm.walls.find { it.id == wid } ?: return
 
-        // Posiziona il prefab al centro del muro
-        val defaultOffset = ((wall.length - kind.defaultWidth) / 2f).coerceAtLeast(0.10f)
+        // Apply seed from previous room if kind matches (consumed on first use)
+        val seed      = pendingNextRoomSeed?.takeIf { it.suggestedKind == kind }
+        val useWidth  = seed?.suggestedWidth  ?: kind.defaultWidth
+        val useHeight = seed?.suggestedHeight ?: kind.defaultHeight
+        val useBottom = seed?.suggestedBottom ?: kind.defaultBottom
+
+        val defaultOffset = ((wall.length - useWidth) / 2f).coerceAtLeast(0.10f)
         val opening = OpeningModel(
-            id              = "op_${System.currentTimeMillis()}",
-            wallId          = wid,
-            kind            = kind,
-            offsetAlongWall = defaultOffset,
-            width           = kind.defaultWidth,
-            bottom          = kind.defaultBottom,
-            height          = kind.defaultHeight
+            id                   = "op_${System.currentTimeMillis()}",
+            wallId               = wid,
+            kind                 = kind,
+            offsetAlongWall      = defaultOffset,
+            width                = useWidth,
+            bottom               = useBottom,
+            height               = useHeight,
+            isInternalConnection = seed != null,
+            linkedRoomId         = seed?.fromRoomId,
+            linkedOpeningId      = seed?.fromOpeningId,
+            connectionLabel      = seed?.let { "← ${it.fromRoomName}" }
         )
+        if (seed != null) pendingNextRoomSeed = null  // consume: only first opening gets pre-fill
+
         wall.clampOpening(opening)
         wall.openings.add(opening)
         editingOpening = opening
-
         mainHandler.post { showOpeningEditPanel(opening) }
     }
 
@@ -1380,7 +1392,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 pendingRoomName = input.text.toString().trim().ifEmpty { "Stanza" }
                 actionBtn.isEnabled = false
                 actionBtn.text      = "Elaborazione…"
-                glSurfaceView.queueEvent { doStopScan() }
+                glSurfaceView.queueEvent { doStopScan(showContinueDialog = true) }
             }
             .setNegativeButton("Annulla", null)
             .show()
@@ -1401,34 +1413,123 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         finish()
     }
 
-    fun doStopScan() {
+    fun doStopScan(showContinueDialog: Boolean = false) {
         val result        = buildResult()
         val openingCount  = roomModel?.walls?.sumOf { it.openings.size } ?: 0
+        val capturedModel = roomModel   // captured before session close for next-room dialog
         session?.pause(); session?.close(); session = null
         mainHandler.post {
             // Persist to local history (runs before finish; fast synchronous write)
+            var savedRecord: RoomRecord? = null
             if (result.getBoolean("success") == true) {
                 val dim = result.getJSObject("roomDimensions")
-                RoomHistoryManager.save(
-                    RoomRecord(
-                        id            = UUID.randomUUID().toString(),
-                        name          = pendingRoomName,
-                        timestamp     = System.currentTimeMillis(),
-                        area          = dim?.getDouble("area")   ?: 0.0,
-                        height        = dim?.getDouble("height") ?: 0.0,
-                        openingCount  = openingCount,
-                        floorPlanPath = result.getString("floorPlanPath"),
-                        glbPath       = result.getString("glbPath")
-                    ),
-                    this
+                savedRecord = RoomRecord(
+                    id            = UUID.randomUUID().toString(),
+                    name          = pendingRoomName,
+                    timestamp     = System.currentTimeMillis(),
+                    area          = dim?.getDouble("area")   ?: 0.0,
+                    height        = dim?.getDouble("height") ?: 0.0,
+                    openingCount  = openingCount,
+                    floorPlanPath = result.getString("floorPlanPath"),
+                    glbPath       = result.getString("glbPath")
                 )
+                RoomHistoryManager.save(savedRecord, this)
             }
             onScanComplete?.invoke(result)
             val cb = onScanResult
             if (cb != null) { cb(result); onScanResult = null }
             else pendingResult = result
-            setResult(RESULT_OK); finish()
+            setResult(RESULT_OK)
+            if (showContinueDialog && savedRecord != null) {
+                showNextRoomDialog(savedRecord, capturedModel)
+            } else {
+                finish()
+            }
         }
+    }
+
+    // ── Multi-room workflow ───────────────────────────────────────────────────
+
+    /**
+     * Shown after a successful scan save.
+     * Lets the user choose whether to scan another room or exit.
+     * Always ends with finish() — setResult(RESULT_OK) has already been called.
+     */
+    private fun showNextRoomDialog(record: RoomRecord, model: RoomModel?) {
+        AlertDialog.Builder(this)
+            .setTitle("\"${record.name}\" salvata")
+            .setMessage("Vuoi scansionare un altro ambiente?")
+            .setPositiveButton("Sì, con collegamento") { _, _ ->
+                if (model != null) showOpeningLinkDialog(record, model)
+                else startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
+            }
+            .setNeutralButton("Sì, nuovo ambiente") { _, _ ->
+                startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
+            }
+            .setNegativeButton("No") { _, _ -> finish() }
+            .setCancelable(false)
+            .show()
+    }
+
+    /**
+     * Lets the user pick which opening in the completed room is the connection point.
+     * Only shows doors and french doors (not windows).
+     * If no linkable openings exist, proceeds directly to next scan without link.
+     */
+    private fun showOpeningLinkDialog(record: RoomRecord, model: RoomModel) {
+        val linkable = model.walls
+            .flatMap { w -> w.openings.filter { it.kind != OpeningKind.WINDOW } }
+
+        if (linkable.isEmpty()) {
+            // No doors in this room — skip to new scan, still record the room link
+            startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
+            return
+        }
+
+        val wallMap = model.walls.associateBy { it.id }
+        val items = (listOf("Nessuna apertura specifica") + linkable.map { o ->
+            val wallLen = wallMap[o.wallId]?.length
+            val wallInfo = if (wallLen != null) " (muro ${"%.1f".format(wallLen)}m)" else ""
+            "${o.kind.label} · ${"%.2f".format(o.width)}×${"%.2f".format(o.height)}m$wallInfo"
+        }).toTypedArray()
+        var selectedIdx = 0
+
+        AlertDialog.Builder(this)
+            .setTitle("Apertura di collegamento")
+            .setSingleChoiceItems(items, 0) { _, idx -> selectedIdx = idx }
+            .setPositiveButton("Continua") { _, _ ->
+                val seed = if (selectedIdx == 0) {
+                    NextRoomSeed(record.id, record.name, null, null, null, null, null)
+                } else {
+                    val o = linkable[selectedIdx - 1]
+                    NextRoomSeed(
+                        fromRoomId      = record.id,
+                        fromRoomName    = record.name,
+                        fromOpeningId   = o.id,
+                        suggestedKind   = o.kind,
+                        suggestedWidth  = o.width,
+                        suggestedHeight = o.height,
+                        suggestedBottom = o.bottom
+                    )
+                }
+                startNextScan(seed)
+            }
+            .setNegativeButton("Senza collegamento") { _, _ ->
+                startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    /**
+     * Stores the seed, resets per-scan state, starts a new ScanningActivity, and finishes this one.
+     * setResult(RESULT_OK) has already been called before this point.
+     */
+    private fun startNextScan(seed: NextRoomSeed?) {
+        pendingNextRoomSeed = seed
+        pendingRoomName     = "Stanza"  // reset default name for next room
+        startActivity(android.content.Intent(this, ScanningActivity::class.java))
+        finish()
     }
 
     // ── buildResult ───────────────────────────────────────────────────────────
