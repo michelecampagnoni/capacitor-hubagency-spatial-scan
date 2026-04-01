@@ -34,16 +34,11 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.app.AlertDialog
-import android.content.res.ColorStateList
-import android.text.Editable
-import android.text.TextWatcher
 import android.widget.*
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
-import java.util.UUID
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
@@ -72,8 +67,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         @Volatile var onScanComplete:         ((JSObject) -> Unit)? = null
         @Volatile var onFrameUpdate:          ((FrameUpdateData) -> Unit)? = null
         @Volatile var onTrackingStateChanged: ((String, String?) -> Unit)? = null
-        /** Seed from the previous room scan; consumed by spawnOpening() on first use. */
-        @Volatile var pendingNextRoomSeed:    NextRoomSeed?     = null
     }
 
     // ── UI: perimeter capture ─────────────────────────────────────────────────
@@ -100,18 +93,15 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     private lateinit var qualityAlta:      TextView
 
     // ── UI: opening placement ─────────────────────────────────────────────────
-    private lateinit var openingPhaseBar:      LinearLayout   // "Aggiungi Aperture" header
-    private lateinit var openingTypeRow:       LinearLayout   // [Porta] [Finestra] [Portafinestra]
-    private lateinit var openingEditPanel:     LinearLayout   // stepper panel
-    private lateinit var openingEditTitle:     TextView
-    private lateinit var openingPosText:       TextView
-    private lateinit var openingWidthText:     TextView
-    private lateinit var openingHeightText:    TextView
-    private lateinit var openingBottomRow:     LinearLayout   // solo per finestre
-    private lateinit var openingBottomText:    TextView
-    private lateinit var connectionToggleRow:  LinearLayout   // checkbox + label input (porte/portefinestre)
-    private lateinit var connectionCheckbox:   android.widget.CheckBox
-    private lateinit var connectionLabelInput: android.widget.EditText
+    private lateinit var openingPhaseBar:   LinearLayout   // "Aggiungi Aperture" header
+    private lateinit var openingTypeRow:    LinearLayout   // [Porta] [Finestra] [Portafinestra]
+    private lateinit var openingEditPanel:  LinearLayout   // stepper panel
+    private lateinit var openingEditTitle:  TextView
+    private lateinit var openingPosText:    TextView
+    private lateinit var openingWidthText:  TextView
+    private lateinit var openingHeightText: TextView
+    private lateinit var openingBottomRow:  LinearLayout   // solo per finestre
+    private lateinit var openingBottomText: TextView
 
     // ── ARCore ───────────────────────────────────────────────────────────────
     private val backgroundRenderer = BackgroundRenderer()
@@ -168,10 +158,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var selectedWallId: String?       = null
     @Volatile private var editingOpening: OpeningModel? = null
     @Volatile private var openingMode     = false
-
-    // ── Room history ──────────────────────────────────────────────────────────
-    /** Room name provided by user in the naming dialog before export. */
-    private var pendingRoomName: String = "Stanza"
 
     // ── Legacy (non attivi) ───────────────────────────────────────────────────
     @Suppress("unused") private val confirmedWallRenderer  = ConfirmedWallRenderer()
@@ -402,56 +388,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         openingBottomText = addStepperRow(openingBottomRow, "Quota da terra", "−", "+",
             { adjustOpening(dB = -0.05f) }, { adjustOpening(dB = +0.05f) })
         openingEditPanel.addView(openingBottomRow, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-
-        // Connection toggle (porte/portefinestre): "Collega un altro ambiente"
-        connectionToggleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, 0)
-            visibility = android.view.View.GONE
-        }
-        connectionCheckbox = android.widget.CheckBox(this).apply {
-            text = "Collega un altro ambiente"
-            setTextColor(Color.argb(220, 180, 215, 255))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            buttonTintList = ColorStateList.valueOf(Color.argb(220, 100, 170, 255))
-        }
-        connectionLabelInput = android.widget.EditText(this).apply {
-            hint = "Nome ambiente collegato (es. Salotto)"
-            setHintTextColor(Color.argb(110, 160, 190, 255))
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            setSingleLine(true)
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-            visibility = android.view.View.GONE
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(4).toFloat()
-                setColor(Color.argb(55, 80, 120, 200))
-                setStroke(dp(1), Color.argb(110, 90, 150, 255))
-            }
-        }
-        connectionCheckbox.setOnCheckedChangeListener { _, checked ->
-            val o = editingOpening ?: return@setOnCheckedChangeListener
-            o.isInternalConnection = checked
-            connectionLabelInput.visibility =
-                if (checked) android.view.View.VISIBLE else android.view.View.GONE
-            if (!checked) { o.connectionLabel = null; connectionLabelInput.setText("") }
-        }
-        connectionLabelInput.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) {
-                val o = editingOpening ?: return
-                o.connectionLabel = s?.toString()?.trim()?.ifEmpty { null }
-            }
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-        })
-        connectionToggleRow.addView(connectionCheckbox, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        connectionToggleRow.addView(connectionLabelInput, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        openingEditPanel.addView(connectionToggleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         // Confirm / Delete row
@@ -767,8 +703,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         actionBtn.setOnClickListener {
             when {
                 openingMode -> {
-                    // In opening mode: "Esporta" → chiedi nome stanza poi genera risultato
-                    showRoomNamingDialog()
+                    // In opening mode: "Esporta" → genera risultato
+                    actionBtn.isEnabled = false
+                    actionBtn.text = "Elaborazione…"
+                    glSurfaceView.queueEvent { doStopScan() }
                 }
                 perimeterCapture.state == PerimeterCapture.State.CLOSED &&
                     roomModel != null -> {
@@ -1142,31 +1080,21 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val rm   = roomModel      ?: return
         val wall = rm.walls.find { it.id == wid } ?: return
 
-        // Apply seed from previous room if kind matches (consumed on first use)
-        val seed      = pendingNextRoomSeed?.takeIf { it.suggestedKind == kind }
-        val useWidth  = seed?.suggestedWidth  ?: kind.defaultWidth
-        val useHeight = seed?.suggestedHeight ?: kind.defaultHeight
-        val useBottom = seed?.suggestedBottom ?: kind.defaultBottom
-
-        val defaultOffset = ((wall.length - useWidth) / 2f).coerceAtLeast(0.10f)
+        // Posiziona il prefab al centro del muro
+        val defaultOffset = ((wall.length - kind.defaultWidth) / 2f).coerceAtLeast(0.10f)
         val opening = OpeningModel(
-            id                   = "op_${System.currentTimeMillis()}",
-            wallId               = wid,
-            kind                 = kind,
-            offsetAlongWall      = defaultOffset,
-            width                = useWidth,
-            bottom               = useBottom,
-            height               = useHeight,
-            isInternalConnection = seed != null,
-            linkedRoomId         = seed?.fromRoomId,
-            linkedOpeningId      = seed?.fromOpeningId,
-            connectionLabel      = seed?.let { "← ${it.fromRoomName}" }
+            id              = "op_${System.currentTimeMillis()}",
+            wallId          = wid,
+            kind            = kind,
+            offsetAlongWall = defaultOffset,
+            width           = kind.defaultWidth,
+            bottom          = kind.defaultBottom,
+            height          = kind.defaultHeight
         )
-        if (seed != null) pendingNextRoomSeed = null  // consume: only first opening gets pre-fill
-
         wall.clampOpening(opening)
         wall.openings.add(opening)
         editingOpening = opening
+
         mainHandler.post { showOpeningEditPanel(opening) }
     }
 
@@ -1174,16 +1102,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         openingEditTitle.text       = o.kind.label
         openingBottomRow.visibility = if (o.kind == OpeningKind.WINDOW)
             android.view.View.VISIBLE else android.view.View.GONE
-        // Connection toggle: solo per porte e portefinestre (non finestre)
-        val canConnect = o.kind != OpeningKind.WINDOW
-        connectionToggleRow.visibility =
-            if (canConnect) android.view.View.VISIBLE else android.view.View.GONE
-        if (canConnect) {
-            connectionCheckbox.isChecked     = o.isInternalConnection
-            connectionLabelInput.visibility  =
-                if (o.isInternalConnection) android.view.View.VISIBLE else android.view.View.GONE
-            connectionLabelInput.setText(o.connectionLabel ?: "")
-        }
         openingEditPanel.visibility = android.view.View.VISIBLE
         openingTypeRow.visibility   = android.view.View.GONE
         refreshOpeningValues(o)
@@ -1376,28 +1294,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
     // ── Stop / cancel ─────────────────────────────────────────────────────────
 
-    /** Shows a naming dialog; on confirm stores the name and proceeds to export. */
-    private fun showRoomNamingDialog() {
-        val input = EditText(this).apply {
-            hint    = "es. Salotto, Cucina, Camera…"
-            setText(pendingRoomName)
-            selectAll()
-            setSingleLine(true)
-            setPadding(48, 32, 48, 32)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Nome stanza")
-            .setView(input)
-            .setPositiveButton("Esporta") { _, _ ->
-                pendingRoomName = input.text.toString().trim().ifEmpty { "Stanza" }
-                actionBtn.isEnabled = false
-                actionBtn.text      = "Elaborazione…"
-                glSurfaceView.queueEvent { doStopScan(showContinueDialog = true) }
-            }
-            .setNegativeButton("Annulla", null)
-            .show()
-    }
-
     fun requestStop() { glSurfaceView.queueEvent { doStopScan() } }
 
     fun cancelScanAndFinish() {
@@ -1413,123 +1309,16 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         finish()
     }
 
-    fun doStopScan(showContinueDialog: Boolean = false) {
-        val result        = buildResult()
-        val openingCount  = roomModel?.walls?.sumOf { it.openings.size } ?: 0
-        val capturedModel = roomModel   // captured before session close for next-room dialog
+    fun doStopScan() {
+        val result = buildResult()
         session?.pause(); session?.close(); session = null
         mainHandler.post {
-            // Persist to local history (runs before finish; fast synchronous write)
-            var savedRecord: RoomRecord? = null
-            if (result.getBoolean("success") == true) {
-                val dim = result.getJSObject("roomDimensions")
-                savedRecord = RoomRecord(
-                    id            = UUID.randomUUID().toString(),
-                    name          = pendingRoomName,
-                    timestamp     = System.currentTimeMillis(),
-                    area          = dim?.getDouble("area")   ?: 0.0,
-                    height        = dim?.getDouble("height") ?: 0.0,
-                    openingCount  = openingCount,
-                    floorPlanPath = result.getString("floorPlanPath"),
-                    glbPath       = result.getString("glbPath")
-                )
-                RoomHistoryManager.save(savedRecord, this)
-            }
             onScanComplete?.invoke(result)
             val cb = onScanResult
             if (cb != null) { cb(result); onScanResult = null }
             else pendingResult = result
-            setResult(RESULT_OK)
-            if (showContinueDialog && savedRecord != null) {
-                showNextRoomDialog(savedRecord, capturedModel)
-            } else {
-                finish()
-            }
+            setResult(RESULT_OK); finish()
         }
-    }
-
-    // ── Multi-room workflow ───────────────────────────────────────────────────
-
-    /**
-     * Shown after a successful scan save.
-     * Lets the user choose whether to scan another room or exit.
-     * Always ends with finish() — setResult(RESULT_OK) has already been called.
-     */
-    private fun showNextRoomDialog(record: RoomRecord, model: RoomModel?) {
-        AlertDialog.Builder(this)
-            .setTitle("\"${record.name}\" salvata")
-            .setMessage("Vuoi scansionare un altro ambiente?")
-            .setPositiveButton("Sì, con collegamento") { _, _ ->
-                if (model != null) showOpeningLinkDialog(record, model)
-                else startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
-            }
-            .setNeutralButton("Sì, nuovo ambiente") { _, _ ->
-                startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
-            }
-            .setNegativeButton("No") { _, _ -> finish() }
-            .setCancelable(false)
-            .show()
-    }
-
-    /**
-     * Lets the user pick which opening in the completed room is the connection point.
-     * Only shows doors and french doors (not windows).
-     * If no linkable openings exist, proceeds directly to next scan without link.
-     */
-    private fun showOpeningLinkDialog(record: RoomRecord, model: RoomModel) {
-        val linkable = model.walls
-            .flatMap { w -> w.openings.filter { it.kind != OpeningKind.WINDOW } }
-
-        if (linkable.isEmpty()) {
-            // No doors in this room — skip to new scan, still record the room link
-            startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
-            return
-        }
-
-        val wallMap = model.walls.associateBy { it.id }
-        val items = (listOf("Nessuna apertura specifica") + linkable.map { o ->
-            val wallLen = wallMap[o.wallId]?.length
-            val wallInfo = if (wallLen != null) " (muro ${"%.1f".format(wallLen)}m)" else ""
-            "${o.kind.label} · ${"%.2f".format(o.width)}×${"%.2f".format(o.height)}m$wallInfo"
-        }).toTypedArray()
-        var selectedIdx = 0
-
-        AlertDialog.Builder(this)
-            .setTitle("Apertura di collegamento")
-            .setSingleChoiceItems(items, 0) { _, idx -> selectedIdx = idx }
-            .setPositiveButton("Continua") { _, _ ->
-                val seed = if (selectedIdx == 0) {
-                    NextRoomSeed(record.id, record.name, null, null, null, null, null)
-                } else {
-                    val o = linkable[selectedIdx - 1]
-                    NextRoomSeed(
-                        fromRoomId      = record.id,
-                        fromRoomName    = record.name,
-                        fromOpeningId   = o.id,
-                        suggestedKind   = o.kind,
-                        suggestedWidth  = o.width,
-                        suggestedHeight = o.height,
-                        suggestedBottom = o.bottom
-                    )
-                }
-                startNextScan(seed)
-            }
-            .setNegativeButton("Senza collegamento") { _, _ ->
-                startNextScan(NextRoomSeed(record.id, record.name, null, null, null, null, null))
-            }
-            .setCancelable(false)
-            .show()
-    }
-
-    /**
-     * Stores the seed, resets per-scan state, starts a new ScanningActivity, and finishes this one.
-     * setResult(RESULT_OK) has already been called before this point.
-     */
-    private fun startNextScan(seed: NextRoomSeed?) {
-        pendingNextRoomSeed = seed
-        pendingRoomName     = "Stanza"  // reset default name for next room
-        startActivity(android.content.Intent(this, ScanningActivity::class.java))
-        finish()
     }
 
     // ── buildResult ───────────────────────────────────────────────────────────
@@ -1606,17 +1395,13 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val openingsArr = JSArray().also { arr ->
             w.openings.forEach { o ->
                 arr.put(JSObject().apply {
-                    put("id",                  o.id)
-                    put("wallId",              o.wallId)
-                    put("kind",                o.kind.name)
-                    put("offsetAlongWall",     o.offsetAlongWall.toDouble())
-                    put("width",               o.width.toDouble())
-                    put("bottom",              o.bottom.toDouble())
-                    put("height",              o.height.toDouble())
-                    put("isInternalConnection", o.isInternalConnection)
-                    if (o.linkedRoomId    != null) put("linkedRoomId",    o.linkedRoomId)
-                    if (o.linkedOpeningId != null) put("linkedOpeningId", o.linkedOpeningId)
-                    if (o.connectionLabel != null) put("connectionLabel", o.connectionLabel)
+                    put("id",             o.id)
+                    put("wallId",         o.wallId)
+                    put("kind",           o.kind.name)
+                    put("offsetAlongWall", o.offsetAlongWall.toDouble())
+                    put("width",          o.width.toDouble())
+                    put("bottom",         o.bottom.toDouble())
+                    put("height",         o.height.toDouble())
                 })
             }
         }
