@@ -123,29 +123,4 @@ class SpatialScanPlugin : Plugin() {
             put("scanDurationSeconds", 0.0)
         })
     }
-
-    /** Returns all saved room records, oldest first. */
-    @PluginMethod
-    fun getRoomHistory(call: PluginCall) {
-        val records = RoomHistoryManager.loadAll(context)
-        call.resolve(JSObject().apply {
-            put("rooms", RoomHistoryManager.toJSArray(records))
-        })
-    }
-
-    /**
-     * Delete a room record by id.
-     * Requires: { id: string }
-     * Returns: { deleted: boolean }
-     */
-    @PluginMethod
-    fun deleteRoom(call: PluginCall) {
-        val id = call.getString("id")
-        if (id.isNullOrBlank()) {
-            call.reject("id required", "INVALID_PARAMS")
-            return
-        }
-        val deleted = RoomHistoryManager.delete(id, context)
-        call.resolve(JSObject().apply { put("deleted", deleted) })
-    }
 }
