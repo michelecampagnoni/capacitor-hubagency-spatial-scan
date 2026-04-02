@@ -32,3 +32,5 @@ capacitor-test-app/android/app/src/main/assets/public/
 
 # Build artifacts folder — tracked separately as release assets
 # builds/ is intentionally NOT ignored (we store APKs/zips/notes there)
+!builds/**/*.apk
+!builds/**/*.zip
