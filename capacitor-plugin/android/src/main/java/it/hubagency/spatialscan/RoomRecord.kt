@@ -1,5 +1,6 @@
 package it.hubagency.spatialscan
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -7,15 +8,16 @@ import org.json.JSONObject
  * Serializzato/deserializzato da RoomHistoryManager come JSON.
  */
 data class RoomRecord(
-    val id:            String,   // UUID generato al salvataggio
-    val name:          String,   // nome assegnato dall'utente
-    val timestamp:     Long,     // ms epoch (System.currentTimeMillis())
-    val area:          Double,   // m²
-    val height:        Double,   // m
+    val id:            String,                      // UUID generato al salvataggio
+    val name:          String,                      // nome assegnato dall'utente
+    val timestamp:     Long,                        // ms epoch (System.currentTimeMillis())
+    val area:          Double,                      // m²
+    val height:        Double,                      // m
     val wallCount:     Int,
     val openingCount:  Int,
-    val floorPlanPath: String?,  // path assoluto PNG (in cacheDir)
-    val glbPath:       String?   // path assoluto GLB (in cacheDir)
+    val floorPlanPath: String?,                     // path assoluto PNG (in cacheDir)
+    val glbPath:       String?,                     // path assoluto GLB (in cacheDir)
+    val openings:      List<OpeningMetadata> = emptyList()  // metadati collegamento (retrocompatibile)
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id",            id)
@@ -27,6 +29,11 @@ data class RoomRecord(
         put("openingCount",  openingCount)
         if (floorPlanPath != null) put("floorPlanPath", floorPlanPath)
         if (glbPath       != null) put("glbPath",       glbPath)
+        if (openings.isNotEmpty()) {
+            val arr = JSONArray()
+            openings.forEach { arr.put(it.toJson()) }
+            put("openings", arr)
+        }
     }
 
     companion object {
@@ -39,7 +46,13 @@ data class RoomRecord(
             wallCount     = obj.optInt("wallCount", 0),
             openingCount  = obj.optInt("openingCount", 0),
             floorPlanPath = obj.optString("floorPlanPath").takeIf { it.isNotEmpty() },
-            glbPath       = obj.optString("glbPath").takeIf { it.isNotEmpty() }
+            glbPath       = obj.optString("glbPath").takeIf { it.isNotEmpty() },
+            openings      = run {
+                val arr = obj.optJSONArray("openings") ?: return@run emptyList()
+                (0 until arr.length()).mapNotNull {
+                    runCatching { OpeningMetadata.fromJson(arr.getJSONObject(it)) }.getOrNull()
+                }
+            }
         )
     }
 }
