@@ -31,6 +31,7 @@ object RoomHistoryManager {
             val list   = loadRaw(context).toMutableList()
             list.add(0, record)          // più recente in cima
             writeAll(context, list)
+            saveRoomData(context, record.id, result)
             Log.d(TAG, "saved room '${record.name}' id=${record.id} area=${record.area}m²")
             record
         } catch (e: Exception) {
@@ -120,5 +121,24 @@ object RoomHistoryManager {
         val arr = JSONArray()
         records.forEach { arr.put(it.toJson()) }
         file(context).writeText(arr.toString())
+    }
+
+    private fun saveRoomData(context: Context, id: String, result: JSObject) {
+        try {
+            File(context.filesDir, "hub_room_$id.json").writeText(result.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "saveRoomData failed id=$id: ${e.message}", e)
+        }
+    }
+
+    fun loadRoomData(context: Context, id: String): JSONObject? {
+        return try {
+            val f = File(context.filesDir, "hub_room_$id.json")
+            if (!f.exists()) return null
+            JSONObject(f.readText())
+        } catch (e: Exception) {
+            Log.e(TAG, "loadRoomData failed id=$id: ${e.message}", e)
+            null
+        }
     }
 }
