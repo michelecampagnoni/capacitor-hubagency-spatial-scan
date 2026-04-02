@@ -19,6 +19,7 @@ package it.hubagency.spatialscan
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -165,6 +166,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var openingMode     = false
     // Metadati collegamento per ogni apertura classificata (keyed by OpeningModel.id)
     private val openingMetadataMap = mutableMapOf<String, OpeningMetadata>()
+    // Spec apertura ereditata dalla stanza precedente (da Intent)
+    private var linkedOpeningSpec:  LinkedOpeningSpec? = null
+    private var linkedSpecAccepted = false   // utente ha confermato il riuso
+    private var linkedSpecPlaced   = false   // spec già usata per il primo spawn
 
     // ── Legacy (non attivi) ───────────────────────────────────────────────────
     @Suppress("unused") private val confirmedWallRenderer  = ConfirmedWallRenderer()
@@ -183,6 +188,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+        linkedOpeningSpec = LinkedOpeningSpec.fromIntent(intent)
         @Suppress("DEPRECATION")
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1073,6 +1079,9 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             undoBtn.visibility               = android.view.View.GONE
             guidanceHeadline.text            = "Aggiungi aperture"
             guidanceSubtext.text             = "Punta un muro e toccalo per selezionarlo"
+            // Offri il riuso dell'apertura collegata (se spec presente e non ancora offerta)
+            val spec = linkedOpeningSpec
+            if (spec != null && !linkedSpecAccepted) showLinkedSpecBanner(spec)
         }
     }
 
@@ -1091,16 +1100,22 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val rm   = roomModel      ?: return
         val wall = rm.walls.find { it.id == wid } ?: return
 
-        // Posiziona il prefab al centro del muro
-        val defaultOffset = ((wall.length - kind.defaultWidth) / 2f).coerceAtLeast(0.10f)
+        // Riusa dimensioni dall'apertura collegata (se accettata e non ancora piazzata)
+        val spec   = linkedOpeningSpec?.takeIf { linkedSpecAccepted && !linkedSpecPlaced }
+        val width  = spec?.width  ?: kind.defaultWidth
+        val height = spec?.height ?: kind.defaultHeight
+        val bottom = spec?.bottom ?: kind.defaultBottom
+        if (spec != null) linkedSpecPlaced = true
+
+        val defaultOffset = ((wall.length - width) / 2f).coerceAtLeast(0.10f)
         val opening = OpeningModel(
             id              = "op_${System.currentTimeMillis()}",
             wallId          = wid,
             kind            = kind,
             offsetAlongWall = defaultOffset,
-            width           = kind.defaultWidth,
-            bottom          = kind.defaultBottom,
-            height          = kind.defaultHeight
+            width           = width,
+            bottom          = bottom,
+            height          = height
         )
         wall.clampOpening(opening)
         wall.openings.add(opening)
@@ -1382,19 +1397,21 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val result = buildResult()
         session?.pause(); session?.close(); session = null
         mainHandler.post {
-            showNamingDialogAndSave(result) {
+            showNamingDialogAndSave(result) { savedRecord ->
                 onScanComplete?.invoke(result)
                 val cb = onScanResult
                 if (cb != null) { cb(result); onScanResult = null }
                 else pendingResult = result
-                setResult(RESULT_OK); finish()
+                showContinueScanDialog(result, savedRecord) {
+                    setResult(RESULT_OK); finish()
+                }
             }
         }
     }
 
-    private fun showNamingDialogAndSave(result: JSObject, onDone: () -> Unit) {
+    private fun showNamingDialogAndSave(result: JSObject, onDone: (RoomRecord?) -> Unit) {
         // Se la scansione non è valida, salta il salvataggio e prosegui
-        if (!result.optBoolean("success", false)) { onDone(); return }
+        if (!result.optBoolean("success", false)) { onDone(null); return }
 
         val input = EditText(this).apply {
             hint = "es. salotto, cucina, corridoio"
@@ -1405,17 +1422,111 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             .setTitle("Nome stanza")
             .setView(input)
             .setPositiveButton("Salva") { _, _ ->
-                try {
+                val saved = try {
                     val name = input.text.toString().trim().ifEmpty { "Stanza" }
                     RoomHistoryManager.save(this, result, name)
                 } catch (e: Exception) {
                     Log.e("ScanningActivity", "room save failed: ${e.message}", e)
+                    null
                 }
-                onDone()
+                onDone(saved)
             }
-            .setNegativeButton("Salta") { _, _ -> onDone() }
+            .setNegativeButton("Salta") { _, _ -> onDone(null) }
             .setCancelable(false)
             .show()
+    }
+
+    // ── Multi-room workflow ───────────────────────────────────────────────────
+
+    /** Banner offerta riuso apertura — mostrato all'ingresso in opening mode. */
+    private fun showLinkedSpecBanner(spec: LinkedOpeningSpec) {
+        val label = "${spec.kind.label} ${String.format("%.2f", spec.width)}m × ${String.format("%.2f", spec.height)}m"
+        AlertDialog.Builder(this)
+            .setTitle("Apertura collegata disponibile")
+            .setMessage("Dalla stanza \"${spec.sourceRoomName}\" c'è una $label.\n\nVuoi usarne le misure per la prima apertura di questo ambiente?")
+            .setPositiveButton("Sì, usa queste misure") { _, _ ->
+                linkedSpecAccepted = true
+                guidanceSubtext.text = "Seleziona un muro — misure ${spec.kind.label} pronte"
+            }
+            .setNegativeButton("No, uso misure standard") { _, _ ->
+                linkedOpeningSpec = null  // ignora la spec
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Step 1 — "Vuoi scansionare un altro ambiente?" */
+    private fun showContinueScanDialog(result: JSObject, savedRecord: RoomRecord?, onFinish: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Scan completata")
+            .setMessage("Vuoi scansionare un altro ambiente?")
+            .setPositiveButton("Sì") { _, _ -> showConnectionChoiceDialog(result, savedRecord, onFinish) }
+            .setNegativeButton("No")  { _, _ -> onFinish() }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Step 2 — "L'ambiente si collega tramite un'apertura?" */
+    private fun showConnectionChoiceDialog(result: JSObject, savedRecord: RoomRecord?, onFinish: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("Collegamento")
+            .setMessage("Il nuovo ambiente si collega tramite un'apertura già definita?")
+            .setPositiveButton("Sì") { _, _ -> showOpeningPickerForRestart(result, savedRecord, onFinish) }
+            .setNegativeButton("No") { _, _ -> restartWithSpec(null, onFinish) }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Step 3 — Selezione apertura da riusare (solo DOOR / FRENCH_DOOR). */
+    private fun showOpeningPickerForRestart(result: JSObject, savedRecord: RoomRecord?, onFinish: () -> Unit) {
+        data class Entry(val label: String, val spec: LinkedOpeningSpec)
+
+        val walls = result.getJSONArray("walls")
+        val entries = mutableListOf<Entry>()
+        if (walls != null) {
+            for (i in 0 until walls.length()) {
+                val wall = walls.optJSONObject(i) ?: continue
+                val ops  = wall.optJSONArray("openings") ?: continue
+                for (j in 0 until ops.length()) {
+                    val op      = ops.optJSONObject(j) ?: continue
+                    val kindStr = op.optString("kind")
+                    if (kindStr != "DOOR" && kindStr != "FRENCH_DOOR") continue
+                    val kind   = runCatching { OpeningKind.valueOf(kindStr) }.getOrNull() ?: continue
+                    val w      = op.optDouble("width",  kind.defaultWidth.toDouble()).toFloat()
+                    val h      = op.optDouble("height", kind.defaultHeight.toDouble()).toFloat()
+                    val b      = op.optDouble("bottom", kind.defaultBottom.toDouble()).toFloat()
+                    val label  = "${kind.label} ${String.format("%.2f", w)}m × ${String.format("%.2f", h)}m (muro $i)"
+                    entries.add(Entry(label, LinkedOpeningSpec(
+                        sourceRoomId   = savedRecord?.id   ?: "",
+                        sourceRoomName = savedRecord?.name ?: "Stanza precedente",
+                        kind = kind, width = w, height = h, bottom = b
+                    )))
+                }
+            }
+        }
+
+        if (entries.isEmpty()) { restartWithSpec(null, onFinish); return }
+
+        var selected = 0
+        AlertDialog.Builder(this)
+            .setTitle("Seleziona apertura di collegamento")
+            .setSingleChoiceItems(entries.map { it.label }.toTypedArray(), 0) { _, which -> selected = which }
+            .setPositiveButton("Usa questa") { _, _ -> restartWithSpec(entries[selected].spec, onFinish) }
+            .setNegativeButton("Senza collegamento") { _, _ -> restartWithSpec(null, onFinish) }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Riavvia ScanningActivity (con o senza spec). onFinish() chiude l'Activity corrente. */
+    private fun restartWithSpec(spec: LinkedOpeningSpec?, onFinish: () -> Unit) {
+        val enableDepth = intent.getBooleanExtra("enableDepth", true)
+        val next = Intent(this, ScanningActivity::class.java).apply {
+            putExtra("enableDepth", enableDepth)
+            spec?.putInto(this)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(next)
+        onFinish()
     }
 
     // ── buildResult ───────────────────────────────────────────────────────────
