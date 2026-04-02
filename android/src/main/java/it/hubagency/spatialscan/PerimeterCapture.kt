@@ -153,7 +153,7 @@ class PerimeterCapture {
     private fun snapFull(rawX: Float, rawY: Float, rawZ: Float, prev: FloatArray): FloatArray {
         val angle   = computeSnappedAngle(rawX, rawZ, prev)
         val rawLen  = distXZ(rawX, rawZ, prev[0], prev[2])
-        val snapLen = roundTo(rawLen, LEN_QUANT_M).coerceAtLeast(LEN_QUANT_M)
+        val snapLen = rawLen.coerceAtLeast(MIN_SEG_M)
         return floatArrayOf(
             prev[0] + cos(angle) * snapLen,
             rawY,
