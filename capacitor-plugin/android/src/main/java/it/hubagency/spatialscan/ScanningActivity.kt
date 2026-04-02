@@ -1402,8 +1402,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 val cb = onScanResult
                 if (cb != null) { cb(result); onScanResult = null }
                 else pendingResult = result
-                showContinueScanDialog(result, savedRecord) {
-                    setResult(RESULT_OK); finish()
+                offerComposer(savedRecord) {
+                    showContinueScanDialog(result, savedRecord) {
+                        setResult(RESULT_OK); finish()
+                    }
                 }
             }
         }
@@ -1451,6 +1453,29 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             .setNegativeButton("No, uso misure standard") { _, _ ->
                 linkedOpeningSpec = null  // ignora la spec
             }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Offre la composizione planimetrica se questa è una scan collegata (linkedOpeningSpec != null). */
+    private fun offerComposer(savedRecord: RoomRecord?, onDone: () -> Unit) {
+        val spec = linkedOpeningSpec
+        if (spec == null || spec.sourceRoomId.isEmpty() || savedRecord == null) { onDone(); return }
+        AlertDialog.Builder(this)
+            .setTitle("Planimetria multi-stanza")
+            .setMessage("Vuoi comporre la planimetria con \"${spec.sourceRoomName}\"?")
+            .setPositiveButton("Sì, componi") { _, _ ->
+                val next = Intent(this, RoomComposerActivity::class.java).apply {
+                    putExtra("roomAId",   spec.sourceRoomId)
+                    putExtra("roomBId",   savedRecord.id)
+                    putExtra("linkKind",  spec.kind.name)
+                    putExtra("linkWidth", spec.width)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(next)
+                onDone()
+            }
+            .setNegativeButton("Non ora") { _, _ -> onDone() }
             .setCancelable(false)
             .show()
     }
