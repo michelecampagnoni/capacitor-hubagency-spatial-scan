@@ -6,16 +6,16 @@ import kotlin.math.*
 /**
  * Post-scan conservative geometry rectification.
  *
- * Snaps wall angles to the nearest 90° multiple (relative to the dominant axis)
+ * Snaps wall angles to the nearest 90° or 45° multiple (relative to the dominant axis)
  * only when the deviation is ≤ SNAP_HARD_DEG (5°). Larger deviations are treated
  * as genuine geometry and left unchanged.
  *
- * This is NOT "force everything to 90°". It is a targeted correction of measurement
- * noise in rooms that are structurally orthogonal.
+ * This is NOT "force everything to 90°/45°". It is a targeted correction of measurement
+ * noise in rooms that are structurally orthogonal or have 45° diagonal walls.
  *
  * Algorithm:
  *  1. Find dominant axis = direction of the longest wall (most reliable measurement)
- *  2. Derive four candidate snap directions: dominantAxis + k * 90° (k = 0..3)
+ *  2. Derive eight candidate snap directions: dominantAxis + k * 45° (k = 0..7)
  *  3. For each edge:
  *       deviation = min angular distance from any candidate snap direction
  *       if deviation ≤ SNAP_HARD_RAD  → snap (measurement noise)
@@ -124,16 +124,16 @@ object RoomRectifier {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /**
-     * Returns the nearest snap angle: one of (dominantAxis + k * π/2) for k = 0..3,
-     * normalized to [-π, π]. The four candidates cover all four directed quadrants
-     * of the two orthogonal axes.
+     * Returns the nearest snap angle: one of (dominantAxis + k * π/4) for k = 0..7,
+     * normalized to [-π, π]. The eight candidates cover 90° and 45° multiples
+     * relative to the dominant axis.
      */
     private fun nearestAxisAngle(rawAngle: Float, dominantAxis: Float): Float {
-        val halfPi     = (PI / 2).toFloat()
+        val quarterPi  = (PI / 4).toFloat()
         val twoPi      = (2 * PI).toFloat()
         val piF        = PI.toFloat()
-        val candidates = Array(4) { k ->
-            var a = dominantAxis + k * halfPi
+        val candidates = Array(8) { k ->
+            var a = dominantAxis + k * quarterPi
             while (a >  piF) a -= twoPi
             while (a < -piF) a += twoPi
             a

@@ -1049,7 +1049,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
     private fun buildRoomModel() {
         val poly = frozenPolygon ?: perimeterCapture.getPolygon()
-        roomModel = RoomModel.fromPolygon(poly, wallHeightPreview)
+        val rectified = RoomRectifier.rectify(poly).polygon
+        roomModel = RoomModel.fromPolygon(rectified, wallHeightPreview)
     }
 
     private fun enterOpeningMode() {
@@ -1346,7 +1347,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             }
         }
 
-        val rm = roomModel ?: RoomModel.fromPolygon(finalPolygon, wallHeightPreview)
+        val exportPolygon = RoomRectifier.rectify(finalPolygon).polygon
+        val rm = roomModel ?: RoomModel.fromPolygon(exportPolygon, wallHeightPreview)
         val exportData    = RoomExportData.fromRoomModel(rm)
         val roomDim       = exportData.dimensions
         val floorPlanPath = FloorPlanExporter.export(exportData, cacheDir)
@@ -1359,7 +1361,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         }
 
         val floorVerts = JSArray().also { a ->
-            finalPolygon.forEach { pt ->
+            exportPolygon.forEach { pt ->
                 a.put(JSObject().apply {
                     put("x", pt[0].toDouble()); put("y", 0.0); put("z", pt[2].toDouble())
                 })
