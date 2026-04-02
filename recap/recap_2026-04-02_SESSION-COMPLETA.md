@@ -134,3 +134,32 @@ Le seguenti componenti NON sono state mai toccate:
 
 - **Visualizzazione nome stanza**: il nome salvato non appare da nessuna parte nell'UI (né durante la scan né nello storico). Va implementata una schermata/lista storico o almeno un feedback visivo post-salvataggio.
 - **Planimetria completa post-composizione**: al termine della conferma nel composer non viene mostrata la planimetria multi-stanza finale. Da implementare come schermata di anteprima/export.
+
+---
+
+## Agenda prossima sessione — domande aperte
+
+### 1. Plugin Capacitor distribuibile
+
+La struttura `capacitor-plugin/` esiste già e `package.json` dichiara `capacitor-hubagency-spatial-scan`. Prima di procedere:
+
+- **Distribuzione**: npm pubblico, npm privato/registry aziendale, o path locale (`file:../`)?
+- **iOS**: il plugin deve supportare anche iOS in futuro, o per ora solo Android?
+- **capacitor-test-app**: va tenuto come demo ufficiale del plugin o è usa-e-getta?
+
+### 2. Migliorie UI
+
+"Sono tante" — serve una lista in ordine di priorità. Esempi:
+- schermata lista storico stanze
+- il composer mostra la planimetria finale dopo conferma
+- design coerente tra tutti i dialog (brand HubAgency)
+- onboarding/tutorial primo avvio
+- altro?
+
+**→ Elenca le migliorie in ordine di priorità così le pianifichiamo.**
+
+### 3. Mounting su HubAgency
+
+- Dove si trova l'app HubAgency? GitHub repo separato?
+- Che stack usa: React Native, Capacitor, web puro?
+- Come si chiama il repo / come lo raggiungo?
