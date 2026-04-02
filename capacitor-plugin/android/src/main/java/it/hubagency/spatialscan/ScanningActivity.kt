@@ -135,6 +135,12 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var frozenPolygon: List<FloatArray>? = null
     @Volatile private var frozenFloorY:  Float?           = null
 
+    // ── Fresh hit test at tap ─────────────────────────────────────────────────
+    // Ultimo frame/camera ARCore valido — usati per hit test fresco al tap.
+    // Scritti solo sul GL thread (onDrawFrame). Letti sul GL thread (queueEvent).
+    @Volatile private var lastArFrame:  Frame?  = null
+    @Volatile private var lastArCamera: Camera? = null
+
 
 
     // ── Floor / tracking ─────────────────────────────────────────────────────
@@ -744,7 +750,11 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             }
         } else {
             glSurfaceView.queueEvent {
-                val rw = lastReticleWorld ?: return@queueEvent
+                val cx = screenWidth / 2f; val cy = screenHeight / 2f
+                val freshRw = lastArFrame?.let { f -> lastArCamera?.let { c ->
+                    screenToWorld(f, c, cx, cy, forceFloor = true)
+                }}
+                val rw = freshRw ?: lastReticleWorld ?: return@queueEvent
                 perimeterCapture.addPoint(rw[0], rw[1], rw[2])
                 mainHandler.post { updateCaptureUI() }
             }
@@ -813,6 +823,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             val frame  = sess.update()
             backgroundRenderer.draw(frame)
             val camera = frame.camera
+            lastArFrame = frame; lastArCamera = camera
             val nowMs  = System.currentTimeMillis()
 
             // Floor Y
