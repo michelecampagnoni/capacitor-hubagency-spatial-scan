@@ -18,6 +18,7 @@
 package it.hubagency.spatialscan
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -1321,12 +1322,40 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val result = buildResult()
         session?.pause(); session?.close(); session = null
         mainHandler.post {
-            onScanComplete?.invoke(result)
-            val cb = onScanResult
-            if (cb != null) { cb(result); onScanResult = null }
-            else pendingResult = result
-            setResult(RESULT_OK); finish()
+            showNamingDialogAndSave(result) {
+                onScanComplete?.invoke(result)
+                val cb = onScanResult
+                if (cb != null) { cb(result); onScanResult = null }
+                else pendingResult = result
+                setResult(RESULT_OK); finish()
+            }
         }
+    }
+
+    private fun showNamingDialogAndSave(result: JSObject, onDone: () -> Unit) {
+        // Se la scansione non è valida, salta il salvataggio e prosegui
+        if (!result.optBoolean("success", false)) { onDone(); return }
+
+        val input = EditText(this).apply {
+            hint = "es. salotto, cucina, corridoio"
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Nome stanza")
+            .setView(input)
+            .setPositiveButton("Salva") { _, _ ->
+                try {
+                    val name = input.text.toString().trim().ifEmpty { "Stanza" }
+                    RoomHistoryManager.save(this, result, name)
+                } catch (e: Exception) {
+                    Log.e("ScanningActivity", "room save failed: ${e.message}", e)
+                }
+                onDone()
+            }
+            .setNegativeButton("Salta") { _, _ -> onDone() }
+            .setCancelable(false)
+            .show()
     }
 
     // ── buildResult ───────────────────────────────────────────────────────────
