@@ -163,6 +163,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var selectedWallId: String?       = null
     @Volatile private var editingOpening: OpeningModel? = null
     @Volatile private var openingMode     = false
+    // Metadati collegamento per ogni apertura classificata (keyed by OpeningModel.id)
+    private val openingMetadataMap = mutableMapOf<String, OpeningMetadata>()
 
     // ── Legacy (non attivi) ───────────────────────────────────────────────────
     @Suppress("unused") private val confirmedWallRenderer  = ConfirmedWallRenderer()
@@ -1148,13 +1150,71 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     private fun confirmOpening() {
+        val confirmed  = editingOpening   // cattura prima di azzerare
         editingOpening = null
         selectedWallId = null
         mainHandler.post {
             openingEditPanel.visibility = android.view.View.GONE
             openingTypeRow.visibility   = android.view.View.GONE
             guidanceSubtext.text = "Punta un altro muro o premi Esporta"
+            // Mostra dialog classificazione solo per porte (non finestre)
+            if (confirmed != null && confirmed.kind != OpeningKind.WINDOW) {
+                showConnectionDialog(confirmed)
+            }
         }
+    }
+
+    /** Dialog classificazione: esterna / interna (con o senza collegamento). */
+    private fun showConnectionDialog(opening: OpeningModel) {
+        val rooms   = RoomHistoryManager.loadAll(this)
+        val options = mutableListOf("Esterna / non collegare", "Interna — collegherò dopo")
+        if (rooms.isNotEmpty()) options.add("Interna — collega ora")
+
+        var selected = 0
+        AlertDialog.Builder(this)
+            .setTitle("Tipo apertura")
+            .setSingleChoiceItems(options.toTypedArray(), 0) { _, which -> selected = which }
+            .setPositiveButton("OK") { _, _ ->
+                when (selected) {
+                    0 -> openingMetadataMap[opening.id] = OpeningMetadata(
+                            openingId = opening.id, wallId = opening.wallId,
+                            isInternal = false, linkedRoomId = null, connectionLabel = null)
+                    1 -> openingMetadataMap[opening.id] = OpeningMetadata(
+                            openingId = opening.id, wallId = opening.wallId,
+                            isInternal = true,  linkedRoomId = null, connectionLabel = null)
+                    2 -> showRoomPickerDialog(opening, rooms)
+                }
+            }
+            .setNegativeButton("Salta") { _, _ -> }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** Secondo step: scelta stanza da collegare (solo se history non vuota). */
+    private fun showRoomPickerDialog(opening: OpeningModel, rooms: List<RoomRecord>) {
+        val names = rooms.map { it.name }.toTypedArray()
+        var selectedIdx = 0
+        AlertDialog.Builder(this)
+            .setTitle("Collega a quale stanza?")
+            .setSingleChoiceItems(names, 0) { _, which -> selectedIdx = which }
+            .setPositiveButton("Collega") { _, _ ->
+                openingMetadataMap[opening.id] = OpeningMetadata(
+                    openingId       = opening.id,
+                    wallId          = opening.wallId,
+                    isInternal      = true,
+                    linkedRoomId    = rooms[selectedIdx].id,
+                    connectionLabel = rooms[selectedIdx].name
+                )
+            }
+            .setNegativeButton("Salta") { _, _ ->
+                // Rimane interna ma senza collegamento risolto
+                openingMetadataMap[opening.id] = OpeningMetadata(
+                    openingId = opening.id, wallId = opening.wallId,
+                    isInternal = true, linkedRoomId = null, connectionLabel = null
+                )
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private fun deleteEditingOpening() {
@@ -1438,6 +1498,12 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     put("width",          o.width.toDouble())
                     put("bottom",         o.bottom.toDouble())
                     put("height",         o.height.toDouble())
+                    // Metadati collegamento (presenti solo se classificati dall'utente)
+                    openingMetadataMap[o.id]?.let { meta ->
+                        put("isInternal", meta.isInternal)
+                        if (meta.linkedRoomId    != null) put("linkedRoomId",    meta.linkedRoomId)
+                        if (meta.connectionLabel != null) put("connectionLabel", meta.connectionLabel)
+                    }
                 })
             }
         }
