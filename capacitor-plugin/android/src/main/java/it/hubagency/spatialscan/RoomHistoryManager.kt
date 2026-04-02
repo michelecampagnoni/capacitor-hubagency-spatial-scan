@@ -67,12 +67,27 @@ object RoomHistoryManager {
         val walls    = result.getJSONArray("walls")
         val floor    = result.getJSObject("floor")
 
-        // Conta aperture su tutti i muri
-        var openings = 0
+        // Conta aperture e raccoglie metadati collegamento
+        var openingCount = 0
+        val openingMetas = mutableListOf<OpeningMetadata>()
         if (walls != null) {
             for (i in 0 until walls.length()) {
-                val wall = walls.optJSONObject(i)
-                openings += wall?.optJSONArray("openings")?.length() ?: 0
+                val wall   = walls.optJSONObject(i) ?: continue
+                val wallId = wall.optString("id")
+                val ops    = wall.optJSONArray("openings") ?: continue
+                openingCount += ops.length()
+                for (j in 0 until ops.length()) {
+                    val op = ops.optJSONObject(j) ?: continue
+                    if (op.has("isInternal")) {
+                        openingMetas.add(OpeningMetadata(
+                            openingId       = op.optString("id"),
+                            wallId          = wallId,
+                            isInternal      = op.optBoolean("isInternal", false),
+                            linkedRoomId    = op.optString("linkedRoomId").takeIf { it.isNotEmpty() },
+                            connectionLabel = op.optString("connectionLabel").takeIf { it.isNotEmpty() }
+                        ))
+                    }
+                }
             }
         }
 
@@ -83,9 +98,10 @@ object RoomHistoryManager {
             area          = dims?.getDouble("area")   ?: floor?.getDouble("area") ?: 0.0,
             height        = dims?.getDouble("height") ?: 0.0,
             wallCount     = walls?.length()           ?: 0,
-            openingCount  = openings,
+            openingCount  = openingCount,
             floorPlanPath = result.getString("floorPlanPath"),
-            glbPath       = result.getString("glbPath")
+            glbPath       = result.getString("glbPath"),
+            openings      = openingMetas
         )
     }
 
