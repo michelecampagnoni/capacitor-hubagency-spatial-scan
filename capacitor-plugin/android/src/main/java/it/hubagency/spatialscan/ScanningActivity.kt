@@ -1338,8 +1338,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
         val input = EditText(this).apply {
             hint = "es. salotto, cucina, corridoio"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
             setPadding(dp(16), dp(12), dp(16), dp(12))
         }
 
