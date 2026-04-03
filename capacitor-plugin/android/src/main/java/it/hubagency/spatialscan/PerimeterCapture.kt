@@ -140,6 +140,26 @@ class PerimeterCapture {
     /** Copia immutabile dei vertici [X, Y, Z]. */
     fun getPolygon(): List<FloatArray> = confirmed.toList()
 
+    /**
+     * Direzioni degli assi dall'ultimo punto confermato.
+     * Restituisce Triple(baseXZ, wallDir, perpDir) — tutti FloatArray(2) = [X, Z].
+     * null se meno di 2 punti confermati (assi non ancora definiti).
+     */
+    fun axisDirections(): Triple<FloatArray, FloatArray, FloatArray>? {
+        if (confirmed.size < 2) return null
+        val a = confirmed[confirmed.size - 2]
+        val b = confirmed.last()
+        val dx = b[0] - a[0]; val dz = b[2] - a[2]
+        val len = sqrt(dx * dx + dz * dz)
+        if (len < 0.01f) return null
+        val nx = dx / len; val nz = dz / len
+        return Triple(
+            floatArrayOf(b[0], b[2]),   // base point XZ (ultimo punto confermato)
+            floatArrayOf(nx, nz),        // direzione muro (forward)
+            floatArrayOf(-nz, nx)        // direzione perpendicolare
+        )
+    }
+
     /** Lunghezza XZ dell'ultimo segmento confermato. */
     fun lastSegmentLength(): Float? {
         if (confirmed.size < 2) return null

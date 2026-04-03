@@ -45,6 +45,7 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * ScanningActivity — Guided Perimeter Capture + Opening Placement
@@ -131,6 +132,16 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     private val heightXBuf = FloatArray(4); private val heightYBuf = FloatArray(4)
     private val heightZBuf = FloatArray(4)  // ridotto da 8 → 4 (~133ms lag, meno sticky)
     private var heightBufIdx  = 0; private var heightBufFill = 0
+
+    // ── Goniometer snap ───────────────────────────────────────────────────────
+    // Il goniometro è centrato sull'ultimo punto confermato. Snap a 5° nel settore
+    // visibile intorno alla direzione corrente del reticolo.
+    @Volatile private var lastSnappedReticle:    FloatArray? = null
+    @Volatile private var reticleIsSnapped:      Boolean     = false
+    @Volatile private var reticleIsRealHit:      Boolean     = false
+    @Volatile private var goniometerCenterPt:    FloatArray? = null  // ultimo punto floor
+    @Volatile private var goniometerCurrentAngle: Float      = 0f    // angolo reticolo (rad)
+    @Volatile private var goniometerSnapAngle:   Float?      = null  // angolo snappato (rad)
 
     // ── Freeze-at-close (anti-drift) ──────────────────────────────────────────
     // Al close: snapshot world coords calcolate dall'anchor. Immutabile.
@@ -392,7 +403,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
         // Riga spostamento laterale — frecce ◀ ▶ (non coordinate)
         openingPosText    = addStepperRow(openingEditPanel, "Sposta",  "◀", "▶",
-            { nudgeOpening(-0.05f) }, { nudgeOpening(+0.05f) })
+            { nudgeOpening(+0.05f) }, { nudgeOpening(-0.05f) })
         // Riga larghezza — resize simmetrico (si allarga da entrambi i lati)
         openingWidthText  = addStepperRow(openingEditPanel, "Larghezza ↔",  "−", "+",
             { adjustOpening(dW = -0.05f) }, { adjustOpening(dW = +0.05f) })
@@ -548,7 +559,16 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(16), dp(12), dp(16), dp(12))
-            setOnClickListener { cancelScanAndFinish() }
+            setOnClickListener {
+                if (perimeterCapture.canUndo) {
+                    glSurfaceView.queueEvent {
+                        perimeterCapture.undo()
+                        mainHandler.post { updateCaptureUI() }
+                    }
+                } else {
+                    cancelScanAndFinish()
+                }
+            }
         }
         mainBtnRow.addView(cancelBtn, LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
@@ -767,11 +787,14 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             }
         } else {
             glSurfaceView.queueEvent {
-                val cx = screenWidth / 2f; val cy = screenHeight / 2f
-                val freshRw = lastArFrame?.let { f -> lastArCamera?.let { c ->
-                    screenToWorld(f, c, cx, cy, forceFloor = true)
-                }}
-                val rw = freshRw ?: lastReticleWorld ?: return@queueEvent
+                // Usa la posizione snappata all'asse se disponibile (più precisa),
+                // altrimenti freshRw → lastReticleWorld come fallback.
+                val rw = lastSnappedReticle ?: run {
+                    val cx = screenWidth / 2f; val cy = screenHeight / 2f
+                    lastArFrame?.let { f -> lastArCamera?.let { c ->
+                        screenToWorld(f, c, cx, cy, forceFloor = true)
+                    }} ?: lastReticleWorld
+                } ?: return@queueEvent
                 perimeterCapture.addPoint(rw[0], rw[1], rw[2])
                 mainHandler.post { updateCaptureUI() }
             }
@@ -808,6 +831,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 floorAnchor.reset(); pcSampler.reset(); perimeterCapture.reset()
                 frozenPolygon = null; frozenFloorY = null
                 lastReticleWorld = null; lastLivePreview = null; lastReticleWorldFree = null
+                lastSnappedReticle = null; reticleIsSnapped = false; reticleIsRealHit = false
+                goniometerCenterPt = null; goniometerCurrentAngle = 0f; goniometerSnapAngle = null
                 reticleBufIdx = 0; reticleBufFill = 0
                 heightBufIdx  = 0; heightBufFill  = 0
                 mainHandler.post {
@@ -856,6 +881,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 // ── Reticle floor (smoothed XZ, Y = floor) — sticky last-valid ────
                 // Solo per il PREVIEW visivo. Il confirm NON usa questi valori smoothed.
                 val rawRw = screenToWorld(frame, camera, cx, cy, forceFloor = true)
+                reticleIsRealHit = rawRw != null
                 if (rawRw != null) {
                     val projY = if (floorAnchor.isLocked) lastFloorY else rawRw[1]
                     reticleXBuf[reticleBufIdx] = rawRw[0]
@@ -869,6 +895,76 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     lastLivePreview = perimeterCapture.livePreview(normRw[0], normRw[1], normRw[2])
                 }
                 // else: sticky — lastReticleWorld e lastLivePreview restano quelli del frame precedente
+
+                // ── Goniometer snap ──────────────────────────────────────────────
+                // Centrato sull'ultimo punto confermato. Snap al raggio 1° più vicino.
+                // Snap reale: 10cm. Tracking perso: 30cm. Min dist dal centro: 20cm.
+                // Il settore visibile segue la direzione orizzontale della camera
+                // (crosshair fisso a centro schermo), non il reticolo ARCore.
+                val gonioCenterPt = perimeterCapture.getPolygon().lastOrNull()
+                // Proiezione geometrica camera→floor SEMPRE fresca (segue il crosshair).
+                // Non dipende da ARCore hit: funziona anche in zone buie/angoli difficili.
+                // Quando camera guarda verso l'alto o quasi orizzontale (floor > 15m)
+                // usa la direzione XZ della camera a 3m davanti al dispositivo.
+                val cp2  = camera.pose.translation
+                val cf2  = camera.pose.rotateVector(floatArrayOf(0f, 0f, -1f))
+                val dy2  = cf2[1]
+                val geoFloor: FloatArray = if (dy2 < -0.005f) {
+                    val t = (lastFloorY - cp2[1]) / dy2
+                    if (t in 0f..15f)
+                        floatArrayOf(cp2[0] + t * cf2[0], lastFloorY, cp2[2] + t * cf2[2])
+                    else {
+                        // Floor troppo lontana: XZ forward a 3m
+                        val xzL = sqrt(cf2[0] * cf2[0] + cf2[2] * cf2[2])
+                        if (xzL > 0.01f) floatArrayOf(cp2[0] + cf2[0] / xzL * 3f, lastFloorY, cp2[2] + cf2[2] / xzL * 3f)
+                        else lastReticleWorld ?: floatArrayOf(cp2[0], lastFloorY, cp2[2])
+                    }
+                } else {
+                    // Camera guarda su/orizzontale: XZ forward a 3m
+                    val xzL = sqrt(cf2[0] * cf2[0] + cf2[2] * cf2[2])
+                    if (xzL > 0.01f) floatArrayOf(cp2[0] + cf2[0] / xzL * 3f, lastFloorY, cp2[2] + cf2[2] / xzL * 3f)
+                    else lastReticleWorld ?: floatArrayOf(cp2[0], lastFloorY, cp2[2])
+                }
+                val baseReticle = geoFloor
+                goniometerCenterPt = gonioCenterPt
+                // Settore: direzione orizzontale della camera → segue il crosshair fisso
+                val camFwd = camera.pose.rotateVector(floatArrayOf(0f, 0f, -1f))
+                val fwdXZLen = sqrt(camFwd[0] * camFwd[0] + camFwd[2] * camFwd[2])
+                if (fwdXZLen > 0.01f)
+                    goniometerCurrentAngle = kotlin.math.atan2(camFwd[2], camFwd[0])
+                // Snap: 1° step, basato sulla posizione del reticolo sul pavimento
+                if (gonioCenterPt != null && baseReticle != null) {
+                    val cx2 = gonioCenterPt[0]; val cz2 = gonioCenterPt[2]
+                    val vx  = baseReticle[0] - cx2; val vz = baseReticle[2] - cz2
+                    val dist = sqrt(vx * vx + vz * vz)
+                    if (dist > 0.20f) {   // troppo vicino al centro → nessuno snap (jitter)
+                        val rawAngle  = kotlin.math.atan2(vz, vx)
+                        val STEP_RAD  = Math.toRadians(1.0).toFloat()   // snap ogni 1°
+                        val snapAngle = (rawAngle / STEP_RAD).roundToInt() * STEP_RAD
+                        val perpDist  = dist * kotlin.math.abs(kotlin.math.sin(rawAngle - snapAngle))
+                        val SNAP_RADIUS = if (reticleIsRealHit) 0.10f else 0.30f
+                        if (perpDist < SNAP_RADIUS) {
+                            val sx = cx2 + kotlin.math.cos(snapAngle) * dist
+                            val sz = cz2 + kotlin.math.sin(snapAngle) * dist
+                            lastSnappedReticle  = floatArrayOf(sx, lastFloorY, sz)
+                            reticleIsSnapped    = true
+                            goniometerSnapAngle = snapAngle
+                            lastLivePreview     = lastSnappedReticle
+                        } else {
+                            lastSnappedReticle  = baseReticle
+                            reticleIsSnapped    = false
+                            goniometerSnapAngle = null
+                        }
+                    } else {
+                        lastSnappedReticle  = baseReticle
+                        reticleIsSnapped    = false
+                        goniometerSnapAngle = null
+                    }
+                } else {
+                    lastSnappedReticle  = baseReticle
+                    reticleIsSnapped    = false
+                    goniometerSnapAngle = null
+                }
 
                 // ── Reticle libero con smoothing dedicato — solo AWAIT_HEIGHT ──
                 // Buffer separato da quello floor: reset automatico quando si esce dalla fase.
@@ -905,18 +1001,23 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
                 val currentWorldPts = frozenPolygon ?: perimeterCapture.getPolygon()
                 perimeterRenderer.draw(
-                    confirmedPts     = currentWorldPts,
-                    livePoint        = if (openingMode || phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT) null else lastLivePreview,
-                    isClosed         = perimeterCapture.state == PerimeterCapture.State.CLOSED,
-                    canClose         = perimeterCapture.canClose,
-                    wallHeight       = wallHeightPreview,
-                    capturePhase     = phase,
-                    liveHeightM      = liveHeightM,
-                    viewMatrix       = viewMatrix,
-                    projMatrix       = projMatrix,
-                    floorGridCenter  = frozenPolygon?.firstOrNull()
+                    confirmedPts          = currentWorldPts,
+                    livePoint             = if (openingMode || phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT) null else lastLivePreview,
+                    isClosed              = perimeterCapture.state == PerimeterCapture.State.CLOSED,
+                    canClose              = perimeterCapture.canClose,
+                    wallHeight            = wallHeightPreview,
+                    capturePhase          = phase,
+                    liveHeightM           = liveHeightM,
+                    viewMatrix            = viewMatrix,
+                    projMatrix            = projMatrix,
+                    floorGridCenter       = frozenPolygon?.firstOrNull()
                         ?: currentWorldPts.firstOrNull()
-                        ?: lastReticleWorld
+                        ?: lastReticleWorld,
+                    reticleSnapped        = reticleIsSnapped,
+                    goniometerCenter      = if (!openingMode && phase != PerimeterCapture.CapturePhase.AWAIT_HEIGHT && !perimeterCapture.state.let { it == PerimeterCapture.State.CLOSED }) goniometerCenterPt else null,
+                    goniometerAngle       = goniometerCurrentAngle,
+                    goniometerSnapAngle   = goniometerSnapAngle,
+                    currentFloorY         = lastFloorY
                 )
 
                 // Opening render (solo in opening mode)
@@ -1389,6 +1490,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val canUndo  = perimeterCapture.canUndo
         updateActionBtn(state, canClose)
         undoBtn.isEnabled = canUndo && state != PerimeterCapture.State.CLOSED
+        // cancelBtn: "INDIETRO" = undo se ha punti, "ANNULLA" = esci se nessun punto
+        cancelBtn.text = if (canUndo && state != PerimeterCapture.State.CLOSED) "INDIETRO" else "ANNULLA"
         val ptCount = perimeterCapture.pointCount
         val lastLen = perimeterCapture.lastSegmentLength()
         sideBadge.text = if (lastLen != null)
