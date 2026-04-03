@@ -154,12 +154,29 @@ class PerimeterRenderer {
             drawPrimitive(GLES20.GL_LINE_STRIP, v, confirmedPts.size)
         }
 
-        // ── 3. Preview chiusura ────────────────────────────────────────────────
-        if (!isClosed && canClose && confirmedPts.size >= 3) {
-            val last = confirmedPts.last(); val first = confirmedPts.first()
-            setColor(COLOR_CLOSE_HINT); GLES20.glLineWidth(2f)
+        // ── 3. Preview chiusura — bordo ciano parete di chiusura ──────────────
+        if (!isClosed && canClose && confirmedPts.size >= 2) {
+            val last  = confirmedPts.last()
+            val first = confirmedPts.first()
+            val topY  = drawY + wallHeight
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            // Bordo rettangolare della parete (LINE_LOOP)
+            setColor(floatArrayOf(0.12f, 0.85f, 1.00f, 0.60f))
+            GLES20.glLineWidth(3f)
+            drawPrimitive(GLES20.GL_LINE_LOOP, floatArrayOf(
+                last[0],  drawY, last[2],
+                first[0], drawY, first[2],
+                first[0], topY,  first[2],
+                last[0],  topY,  last[2]
+            ), 4)
+            // Linee verticali agli spigoli per enfatizzare gli edge
+            GLES20.glLineWidth(2f)
             drawPrimitive(GLES20.GL_LINES, floatArrayOf(
-                last[0], drawY, last[2], first[0], drawY, first[2]), 2)
+                last[0],  drawY, last[2],  last[0],  topY, last[2],
+                first[0], drawY, first[2], first[0], topY, first[2]
+            ), 4)
+            GLES20.glDisable(GLES20.GL_BLEND)
         }
 
         // ── 4. Chiusura confermata ─────────────────────────────────────────────
@@ -176,6 +193,25 @@ class PerimeterRenderer {
             setColor(COLOR_LIVE); GLES20.glLineWidth(6f)
             drawPrimitive(GLES20.GL_LINES, floatArrayOf(
                 prev[0], drawY, prev[2], livePoint[0], drawY, livePoint[2]), 2)
+        }
+
+        // ── 5c. Edge verticale ciano al ghost corner ───────────────────────────
+        // Visibile da AWAIT_SECOND_FLOOR in poi (capturePhase != AWAIT_HEIGHT e
+        // != AWAIT_FIRST_FLOOR). Mostra dove terminerebbe la parete corrente:
+        // l'utente allinea questo edge con l'angolo reale della stanza.
+        if (!isClosed && livePoint != null &&
+            capturePhase != PerimeterCapture.CapturePhase.AWAIT_FIRST_FLOOR &&
+            capturePhase != PerimeterCapture.CapturePhase.AWAIT_HEIGHT) {
+            val topY = drawY + wallHeight
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            setColor(floatArrayOf(0.12f, 0.85f, 1.00f, 0.75f))
+            GLES20.glLineWidth(3f)
+            drawPrimitive(GLES20.GL_LINES, floatArrayOf(
+                livePoint[0], drawY, livePoint[2],
+                livePoint[0], topY,  livePoint[2]
+            ), 2)
+            GLES20.glDisable(GLES20.GL_BLEND)
         }
 
         // ── 5a. Goniometro a terra ─────────────────────────────────────────────

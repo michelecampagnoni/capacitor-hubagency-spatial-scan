@@ -1366,7 +1366,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     /**
      * Raycast centro schermo → coordinate world.
      *
-     * @param forceFloor true (default): per piani orizzontali, forza Y = lastFloorY.
+     * @param forceFloor true (default): forza Y = lastFloorY su qualsiasi hit
+     *                   (piano orizzontale, piano verticale, feature point su parete)
+     *                   quando il floor è locked. Permette di puntare le pareti
+     *                   invece del pavimento coperto da oggetti.
      *                   false: usa Y reale dal hit — per cattura altezza (AWAIT_HEIGHT).
      */
     private fun screenToWorld(
@@ -1381,15 +1384,15 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 trackable is Plane &&
                     trackable.trackingState == TrackingState.TRACKING &&
                     trackable.subsumedBy == null -> {
-                    val y = if (forceFloor &&
-                        trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
-                        floorAnchor.isLocked) lastFloorY else pose.ty()
+                    val y = if (forceFloor && floorAnchor.isLocked) lastFloorY else pose.ty()
                     return floatArrayOf(pose.tx(), y, pose.tz())
                 }
                 trackable is com.google.ar.core.Point &&
                     trackable.orientationMode ==
-                        com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL ->
-                    return floatArrayOf(pose.tx(), pose.ty(), pose.tz())
+                        com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL -> {
+                    val y = if (forceFloor && floorAnchor.isLocked) lastFloorY else pose.ty()
+                    return floatArrayOf(pose.tx(), y, pose.tz())
+                }
             }
         }
         if (floorAnchor.isLocked && forceFloor) {
