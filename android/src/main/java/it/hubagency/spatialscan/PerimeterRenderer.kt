@@ -6,7 +6,9 @@ import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -94,16 +96,21 @@ class PerimeterRenderer {
      * Backward-compatible: il caller può non passarlo.
      */
     fun draw(
-        confirmedPts:    List<FloatArray>,
-        livePoint:       FloatArray?,
-        isClosed:        Boolean,
-        canClose:        Boolean,
-        wallHeight:      Float,
-        capturePhase:    PerimeterCapture.CapturePhase,
-        liveHeightM:     Float?,
-        viewMatrix:      FloatArray,
-        projMatrix:      FloatArray,
-        floorGridCenter: FloatArray? = null
+        confirmedPts:        List<FloatArray>,
+        livePoint:           FloatArray?,
+        isClosed:            Boolean,
+        canClose:            Boolean,
+        wallHeight:          Float,
+        capturePhase:        PerimeterCapture.CapturePhase,
+        liveHeightM:         Float?,
+        viewMatrix:          FloatArray,
+        projMatrix:          FloatArray,
+        floorGridCenter:     FloatArray? = null,
+        reticleSnapped:      Boolean     = false,
+        goniometerCenter:    FloatArray? = null,  // null = goniometro nascosto
+        goniometerAngle:     Float       = 0f,    // angolo corrente reticolo (rad)
+        goniometerSnapAngle: Float?      = null,  // angolo snappato da evidenziare (rad)
+        currentFloorY:       Float?      = null   // lastFloorY da ScanningActivity
     ) {
         if (program == 0) return
 
@@ -171,9 +178,18 @@ class PerimeterRenderer {
                 prev[0], drawY, prev[2], livePoint[0], drawY, livePoint[2]), 2)
         }
 
-        // ── 5b. Ghost corner fucsia ────────────────────────────────────────────
+        // ── 5a. Goniometro a terra ─────────────────────────────────────────────
+        // Y: usa lastFloorY dal caller (stima floor attuale), non il Y del punto
+        // confermato che può avere drift ARCore. FLOOR_OFFSET evita z-fighting.
+        if (goniometerCenter != null) {
+            val gonioY = (currentFloorY ?: goniometerCenter[1]) + FLOOR_OFFSET
+            drawGoniometer(goniometerCenter[0], gonioY, goniometerCenter[2],
+                           goniometerAngle, goniometerSnapAngle)
+        }
+
+        // ── 5b. Ghost corner — ciano se agganciato all'asse, fucsia altrimenti ──
         if (!isClosed && livePoint != null)
-            drawGhostCorner(livePoint[0], drawY, livePoint[2])
+            drawGhostCorner(livePoint[0], drawY, livePoint[2], reticleSnapped)
 
         // ── 6. Punti vertice cyan ──────────────────────────────────────────────
         if (confirmedPts.isNotEmpty()) {
@@ -330,9 +346,9 @@ class PerimeterRenderer {
 
     // ── Ghost corner fucsia ────────────────────────────────────────────────────
 
-    private fun drawGhostCorner(x: Float, baseY: Float, z: Float) {
+    private fun drawGhostCorner(x: Float, baseY: Float, z: Float, isSnapped: Boolean = false) {
         val y = baseY + 0.004f; val arm = 0.08f; val dia = 0.06f
-        setColor(COLOR_GHOST_CORNER)
+        setColor(if (isSnapped) COLOR_CONFIRMED else COLOR_GHOST_CORNER)
         GLES20.glLineWidth(6f)
         drawPrimitive(GLES20.GL_LINES, floatArrayOf(
             x - arm, y, z,  x + arm, y, z,
@@ -375,6 +391,139 @@ class PerimeterRenderer {
         }
         setColor(COLOR_WALL_PREVIEW); GLES20.glLineWidth(2f)
         drawPrimitive(GLES20.GL_LINES, v, v.size / 3)
+    }
+
+    // ── Goniometro a terra ─────────────────────────────────────────────────────
+
+    /**
+     * Goniometro 3D a terra — aspetto goniometro fisico (rif. immagine 1).
+     * Struttura: arco esterno + arco interno + raggi ogni 10° + tacche 1°/5°/10°.
+     * Colore: ciano 0.70 alpha. Settore ±60° intorno alla direzione del reticolo.
+     * Raggio snap in ciano pieno che buca entrambi gli archi.
+     */
+    private fun drawGoniometer(
+        cx: Float, y: Float, cz: Float,
+        reticleAngle: Float, snapAngle: Float?
+    ) {
+        val PI_F       = Math.PI.toFloat()
+        val DEG1_RAD   = (PI_F / 180f)
+        val STEP1_RAD  = DEG1_RAD          // passo tacche fini
+        val STEP5_RAD  = DEG1_RAD * 5f
+        val STEP10_RAD = DEG1_RAD * 10f
+        val SECTOR_RAD = DEG1_RAD * 65f    // ±65° → allineato a griglia 10°
+        val R_OUT      = 0.40f             // arco esterno — 40cm reali a terra
+        val R_IN       = 0.17f             // arco interno
+        val y2         = y + 0.003f
+        val CYAN70     = floatArrayOf(0.12f, 0.85f, 1.00f, 0.70f)
+        val CYAN_FULL  = floatArrayOf(0.12f, 0.85f, 1.00f, 1.00f)
+
+        // Bordi settore allineati alla griglia 10°
+        val startA = (((reticleAngle - SECTOR_RAD) / STEP10_RAD).toInt()) * STEP10_RAD
+        val endA   = startA + SECTOR_RAD * 2f + STEP10_RAD
+
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        setColor(CYAN70)
+
+        // ── 1. Arco esterno (LINE_STRIP, passo 1°) ───────────────────────────
+        val outerArc = mutableListOf<Float>()
+        var a = startA
+        while (a <= endA + STEP1_RAD * 0.5f) {
+            outerArc += cx + cos(a) * R_OUT; outerArc += y2; outerArc += cz + sin(a) * R_OUT
+            a += STEP1_RAD
+        }
+        GLES20.glLineWidth(2f)
+        drawPrimitive(GLES20.GL_LINE_STRIP, outerArc.toFloatArray(), outerArc.size / 3)
+
+        // ── 2. Arco interno (LINE_STRIP, passo 1°) ───────────────────────────
+        val innerArc = mutableListOf<Float>()
+        a = startA
+        while (a <= endA + STEP1_RAD * 0.5f) {
+            innerArc += cx + cos(a) * R_IN; innerArc += y2; innerArc += cz + sin(a) * R_IN
+            a += STEP1_RAD
+        }
+        GLES20.glLineWidth(1f)
+        drawPrimitive(GLES20.GL_LINE_STRIP, innerArc.toFloatArray(), innerArc.size / 3)
+
+        // ── 3. Raggi arco interno → esterno ogni 10° ─────────────────────────
+        val spokes = mutableListOf<Float>()
+        a = startA
+        while (a <= endA) {
+            spokes += cx + cos(a) * R_IN;  spokes += y2; spokes += cz + sin(a) * R_IN
+            spokes += cx + cos(a) * R_OUT; spokes += y2; spokes += cz + sin(a) * R_OUT
+            a += STEP10_RAD
+        }
+        GLES20.glLineWidth(1f)
+        drawPrimitive(GLES20.GL_LINES, spokes.toFloatArray(), spokes.size / 3)
+
+        // ── 4. Tacche sull'arco esterno (ogni 1°) ────────────────────────────
+        // Lunghezze: 1°=2cm · 5°=4cm · 10°=già coperto dai raggi
+        val ticks = mutableListOf<Float>()
+        a = startA
+        while (a <= endA) {
+            val degRaw = (a * 180f / PI_F).roundToInt()
+            val deg    = ((degRaw % 360) + 360) % 360
+            val tickLen = when {
+                deg % 10 == 0 -> 0f       // già disegnato dai raggi
+                deg % 5  == 0 -> 0.04f
+                else          -> 0.02f
+            }
+            if (tickLen > 0f) {
+                ticks += cx + cos(a) * R_OUT
+                ticks += y2
+                ticks += cz + sin(a) * R_OUT
+                ticks += cx + cos(a) * (R_OUT + tickLen)
+                ticks += y2
+                ticks += cz + sin(a) * (R_OUT + tickLen)
+            }
+            a += STEP1_RAD
+        }
+        if (ticks.isNotEmpty()) {
+            GLES20.glLineWidth(1f)
+            drawPrimitive(GLES20.GL_LINES, ticks.toFloatArray(), ticks.size / 3)
+        }
+
+        // ── 5. Tacche sull'arco interno (ogni 5°, verso centro) ──────────────
+        val innerTicks = mutableListOf<Float>()
+        a = startA
+        while (a <= endA) {
+            val degRaw = (a * 180f / PI_F).roundToInt()
+            val deg    = ((degRaw % 360) + 360) % 360
+            val tickLen = when {
+                deg % 10 == 0 -> 0f       // già coperto dai raggi
+                deg % 5  == 0 -> 0.03f
+                else          -> 0f
+            }
+            if (tickLen > 0f) {
+                innerTicks += cx + cos(a) * R_IN
+                innerTicks += y2
+                innerTicks += cz + sin(a) * R_IN
+                innerTicks += cx + cos(a) * (R_IN - tickLen)
+                innerTicks += y2
+                innerTicks += cz + sin(a) * (R_IN - tickLen)
+            }
+            a += STEP5_RAD
+        }
+        if (innerTicks.isNotEmpty()) {
+            GLES20.glLineWidth(1f)
+            drawPrimitive(GLES20.GL_LINES, innerTicks.toFloatArray(), innerTicks.size / 3)
+        }
+
+        // ── 6. Raggio snap — ciano pieno, buca entrambi gli archi ────────────
+        if (snapAngle != null) {
+            setColor(CYAN_FULL)
+            GLES20.glLineWidth(3f)
+            drawPrimitive(GLES20.GL_LINES, floatArrayOf(
+                cx, y2, cz,
+                cx + cos(snapAngle) * (R_OUT + 0.10f), y2, cz + sin(snapAngle) * (R_OUT + 0.10f)
+            ), 2)
+        }
+
+        // ── 7. Punto centrale ─────────────────────────────────────────────────
+        setColor(CYAN_FULL)
+        drawPrimitive(GLES20.GL_POINTS, floatArrayOf(cx, y2 + 0.002f, cz), 1)
+
+        GLES20.glDisable(GLES20.GL_BLEND)
     }
 
     // ── GL helpers ─────────────────────────────────────────────────────────────
