@@ -738,7 +738,9 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                         frozenFloorY = lastFloorY
                         val capturedH = perimeterCapture.capturedHeight
                         mainHandler.post {
-                            if (capturedH != null) wallHeightPreview = capturedH
+                            // wallHeightPreview rimane quello impostato dall'utente con lo stepper.
+                            // capturedH (dal tap P1) era usato per sovrascriverlo, ma causava
+                            // reset indesiderati: lo stepper è l'unica fonte autoritativa.
                             updateCaptureUI()
                         }
                     }
@@ -751,10 +753,13 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     private fun handlePerimeterTap() {
         val phase = perimeterCapture.capturePhase
         if (phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT) {
+            // Usa il valore dello stepper come altezza confermata.
+            // Il reticolo libero (lastReticleWorldFree) non è affidabile per il soffitto:
+            // spesso non trova feature points e ricade nel fallback "2m avanti alla camera",
+            // producendo altezze sbagliate. Lo stepper è l'unica fonte autoritativa.
+            val h = wallHeightPreview
             glSurfaceView.queueEvent {
-                val rw = lastReticleWorldFree ?: return@queueEvent
-                val relativeHeight = (rw[1] - lastFloorY).coerceAtLeast(PerimeterCapture.MIN_HEIGHT_M)
-                perimeterCapture.addPoint(rw[0], relativeHeight, rw[2])
+                perimeterCapture.addPoint(0f, h, 0f)
                 mainHandler.post { updateCaptureUI() }
             }
         } else {
@@ -884,8 +889,11 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 }
 
                 // Altezza live per preview verticale e sideBadge
+                // liveHeightM: usa wallHeightPreview (stepper) così la linea di anteprima
+                // riflette istantaneamente ciò che l'utente imposta, senza dipendere dal
+                // raycast verso il soffitto (spesso inaffidabile su superfici lisce).
                 val liveHeightM: Float? = if (phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT)
-                    lastReticleWorldFree?.let { (it[1] - lastFloorY).coerceAtLeast(0f) }
+                    wallHeightPreview
                 else null
 
                 val viewMatrix = FloatArray(16); val projMatrix = FloatArray(16)
@@ -926,7 +934,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 val trackingState = camera.trackingState
                 val capturePhaseUi = perimeterCapture.capturePhase
                 val liveHmUi: Float? = if (capturePhaseUi == PerimeterCapture.CapturePhase.AWAIT_HEIGHT)
-                    lastReticleWorldFree?.let { (it[1] - lastFloorY).coerceAtLeast(0f) }
+                    wallHeightPreview
                 else null
                 val pauseReason   = if (trackingState == TrackingState.PAUSED)
                     camera.trackingFailureReason.name else null
@@ -967,12 +975,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     guidanceHeadline.text = hl
                     guidanceSubtext.text  = sub
                     sideBadge.text = when {
-                        capturePhaseUi == PerimeterCapture.CapturePhase.AWAIT_HEIGHT && liveHmUi != null ->
-                            "Altezza live: ${"%.2f".format(liveHmUi)}m"
+                        capturePhaseUi == PerimeterCapture.CapturePhase.AWAIT_HEIGHT ->
+                            "Altezza: ${"%.2f".format(wallHeightPreview)}m · usa + / − poi conferma"
                         ptCount == 0 && !floorLocked -> "Attendi floor lock…"
                         ptCount == 0                 -> "Pronto · Vai in un angolo"
-                        capturePhaseUi == PerimeterCapture.CapturePhase.AWAIT_HEIGHT ->
-                            "P0 piazzato · alza la camera verso il soffitto"
                         capturePhaseUi == PerimeterCapture.CapturePhase.AWAIT_SECOND_FLOOR ->
                             "Altezza: ${"%.2f".format(perimeterCapture.capturedHeight ?: wallHeightPreview)}m · ora il 2° angolo"
                         lastLen != null ->
@@ -1317,7 +1323,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         phase == PerimeterCapture.CapturePhase.AWAIT_FIRST_FLOOR ->
             "Posizionati in un angolo" to "Punta alla BASE del muro · TAP"
         phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT ->
-            "Alza la camera verso l'alto" to "Punta all'ANGOLO IN ALTO · TAP per l'altezza"
+            "Imposta l'altezza delle pareti" to "Usa + / − per regolare · poi premi ALTEZZA QUI"
         phase == PerimeterCapture.CapturePhase.AWAIT_SECOND_FLOOR ->
             "Prima parete! Cammina lungo il muro" to "Punta alla BASE dell'angolo successivo · TAP"
         perimeterCapture.canClose ->
@@ -1344,22 +1350,27 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             android.view.View.VISIBLE else android.view.View.GONE
 
         // actionBtn: secondario, visibile solo quando canClose o isClosed
+        // Lo stepper è visibile anche durante AWAIT_HEIGHT: l'utente imposta l'altezza
+        // PRIMA di confermare con "ALTEZZA QUI", non dopo la chiusura del poligono.
+        val showStepper = isClosed || phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT
         when {
             isClosed -> {
                 actionBtn.text = "Aggiungi Aperture"
                 actionBtn.visibility = android.view.View.VISIBLE
-                heightControlRow.visibility = android.view.View.VISIBLE
-                heightValueText.text = "${"%.2f".format(wallHeightPreview)}m"
             }
             canClose -> {
                 actionBtn.text = "Chiudi Poligono"
                 actionBtn.visibility = android.view.View.VISIBLE
-                heightControlRow.visibility = android.view.View.GONE
             }
             else -> {
                 actionBtn.visibility = android.view.View.GONE
-                heightControlRow.visibility = android.view.View.GONE
             }
+        }
+        if (showStepper) {
+            heightControlRow.visibility = android.view.View.VISIBLE
+            heightValueText.text = "${"%.2f".format(wallHeightPreview)}m"
+        } else {
+            heightControlRow.visibility = android.view.View.GONE
         }
     }
 
