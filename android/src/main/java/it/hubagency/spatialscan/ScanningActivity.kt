@@ -390,15 +390,18 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         }
         openingEditPanel.addView(openingEditTitle)
 
-        // Stepper rows
-        openingPosText    = addStepperRow(openingEditPanel, "Posizione",  "−", "+",
+        // Riga spostamento laterale — frecce ◀ ▶ (non coordinate)
+        openingPosText    = addStepperRow(openingEditPanel, "Sposta",  "◀", "▶",
             { nudgeOpening(-0.05f) }, { nudgeOpening(+0.05f) })
-        openingWidthText  = addStepperRow(openingEditPanel, "Larghezza",  "−", "+",
+        // Riga larghezza — resize simmetrico (si allarga da entrambi i lati)
+        openingWidthText  = addStepperRow(openingEditPanel, "Larghezza ↔",  "−", "+",
             { adjustOpening(dW = -0.05f) }, { adjustOpening(dW = +0.05f) })
-        openingHeightText = addStepperRow(openingEditPanel, "Altezza",    "−", "+",
+        // Riga altezza apertura
+        openingHeightText = addStepperRow(openingEditPanel, "Altezza ↕",    "−", "+",
             { adjustOpening(dH = -0.05f) }, { adjustOpening(dH = +0.05f) })
+        // Riga posizione verticale (quota da terra) — solo finestre — frecce ▼ ▲
         openingBottomRow  = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        openingBottomText = addStepperRow(openingBottomRow, "Quota da terra", "−", "+",
+        openingBottomText = addStepperRow(openingBottomRow, "Quota",  "▼", "▲",
             { adjustOpening(dB = -0.05f) }, { adjustOpening(dB = +0.05f) })
         openingEditPanel.addView(openingBottomRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -1141,10 +1144,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     private fun refreshOpeningValues(o: OpeningModel) {
-        val wallLen = roomModel?.walls?.find { it.id == o.wallId }?.length
-        openingPosText.text    = if (wallLen != null)
-            "${"%.2f".format(o.offsetAlongWall)}m / ${"%.2f".format(wallLen)}m"
-        else "${"%.2f".format(o.offsetAlongWall)}m"
+        // Mostra valori misurati, non coordinate grezze
+        openingPosText.text    = "${"%.2f".format(o.offsetAlongWall)}m"
         openingWidthText.text  = "${"%.2f".format(o.width)}m"
         openingHeightText.text = "${"%.2f".format(o.height)}m"
         openingBottomText.text = "${"%.2f".format(o.bottom)}m"
@@ -1163,7 +1164,15 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val o    = editingOpening ?: return
         val rm   = roomModel      ?: return
         val wall = rm.walls.find { it.id == o.wallId } ?: return
-        if (dW != 0f) o.width  = (o.width  + dW).coerceIn(0.30f, wall.length - 0.20f)
+        if (dW != 0f) {
+            // Resize simmetrico: il centro dell'apertura rimane fisso.
+            // L'offset si aggiusta di metà del delta, poi clampOpening
+            // lo ancora ai bordi della parete se necessario.
+            val center   = o.offsetAlongWall + o.width / 2f
+            val newWidth = (o.width + dW).coerceIn(0.30f, wall.length - 0.20f)
+            o.width           = newWidth
+            o.offsetAlongWall = center - newWidth / 2f
+        }
         if (dH != 0f) o.height = (o.height + dH).coerceIn(0.30f, wallHeightPreview)
         if (dB != 0f) o.bottom = (o.bottom + dB).coerceIn(0.00f, wallHeightPreview - o.height)
         wall.clampOpening(o)
