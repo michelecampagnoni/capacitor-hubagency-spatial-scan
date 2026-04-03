@@ -151,9 +151,14 @@ class OpeningRenderer {
             OpeningKind.FRENCH_DOOR -> COLOR_FRENCH_DOOR
         }
 
+        // Fix z-fighting: sposta le aperture leggermente in avanti nel depth buffer
+        // rispetto alla parete coplanare. glPolygonOffset(-2,-2) riduce il valore depth
+        // (avvicina alla camera), eliminando l'alternanza visibile (flickering).
+        GLES20.glEnable(GLES20.GL_POLYGON_OFFSET_FILL)
+        GLES20.glPolygonOffset(-2f, -2f)
+
         // Fill (traslucido)
         setColor(fillColor)
-        // Disegniamo come due triangoli (GL_TRIANGLE_FAN)
         drawPrimitive(GLES20.GL_TRIANGLE_FAN, floatArrayOf(
             x0, yB, z0,
             x1, yB, z1,
@@ -161,7 +166,9 @@ class OpeningRenderer {
             x0, yT, z0
         ), 4)
 
-        // Bordo
+        GLES20.glDisable(GLES20.GL_POLYGON_OFFSET_FILL)
+
+        // Bordo — polygon offset non necessario per le linee, ma manteniamo consistenza
         setColor(COLOR_OPENING_BORDER)
         GLES20.glLineWidth(3f)
         drawPrimitive(GLES20.GL_LINE_LOOP, floatArrayOf(
