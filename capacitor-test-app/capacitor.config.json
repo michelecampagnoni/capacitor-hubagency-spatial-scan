@@ -1,0 +1,10 @@
+{
+  "appId": "it.hubagency.test",
+  "appName": "capacitor-test-app",
+  "webDir": "dist",
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false
+    }
+  }
+}
