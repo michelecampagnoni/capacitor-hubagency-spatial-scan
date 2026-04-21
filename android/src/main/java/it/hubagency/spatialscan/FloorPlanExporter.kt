@@ -348,7 +348,7 @@ object FloorPlanExporter {
 
     private fun drawHeader(canvas: Canvas, walls: List<ExportWall>, roomDim: RoomDimensions) {
         val openingCount = walls.sumOf { it.openings.size }
-        canvas.drawText("Planimetria ARCore", MARGIN, 50f, Paint().apply {
+        canvas.drawText("Ultimo Rilievo", MARGIN, 50f, Paint().apply {
             color     = Color.argb(210, 20, 20, 65)
             textSize  = 38f
             typeface  = Typeface.DEFAULT_BOLD
