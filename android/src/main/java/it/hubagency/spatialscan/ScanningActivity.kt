@@ -14,6 +14,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.*
@@ -169,7 +170,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(20), dp(12), dp(20), dp(12))
-            setBackgroundColor(Color.argb(190, 8, 12, 28))
+            setBackgroundColor(Color.TRANSPARENT)
         }
         guidanceHeadline = TextView(this).apply {
             text = "Inizializzazione…"
@@ -177,12 +178,14 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
+            setShadowLayer(16f, 0f, 0f, Color.BLACK)
         }
         guidanceSubtext = TextView(this).apply {
             text = "Muoviti verso il pavimento"
             setTextColor(Color.argb(200, 170, 200, 255))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             gravity = Gravity.CENTER
+            setShadowLayer(14f, 0f, 0f, Color.BLACK)
         }
         guidancePill.addView(guidanceHeadline)
         guidancePill.addView(guidanceSubtext)
@@ -193,7 +196,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         // Bottom bar
         val bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(210, 6, 8, 20))
+            setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(16), dp(14), dp(16), dp(36))
         }
 
@@ -202,6 +205,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(10))
+            visibility = View.GONE
         }
         sideBadge = TextView(this).apply {
             text = "In attesa…"
@@ -254,6 +258,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             typeface = Typeface.MONOSPACE
             setPadding(dp(6), dp(4), dp(6), dp(4))
             setBackgroundColor(Color.argb(160, 0, 0, 0))
+            visibility = View.GONE
         }
         root.addView(pcDebugOverlay, android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -449,10 +454,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
                     // Guidance
                     val (hl, sub) = guidanceText(trackingState, floorLocked, captureState, ptCount)
-                    guidancePill.setBackgroundColor(
-                        if (captureState == PerimeterCapture.State.CLOSED)
-                            Color.argb(210, 10, 80, 45) else Color.argb(190, 8, 12, 28)
-                    )
+                    guidancePill.setBackgroundColor(Color.TRANSPARENT)
                     guidanceHeadline.text = hl
                     guidanceSubtext.text  = sub
 

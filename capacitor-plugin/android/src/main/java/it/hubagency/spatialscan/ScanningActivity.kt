@@ -34,6 +34,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.*
@@ -292,14 +293,14 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            setShadowLayer(8f, 0f, 2f, Color.argb(160, 0, 0, 0))
+            setShadowLayer(16f, 0f, 0f, Color.BLACK)
         }
         guidanceSubtext = TextView(this).apply {
             text = "Muoviti verso il pavimento"
             setTextColor(Color.argb(210, 20, 215, 255))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             gravity = Gravity.CENTER
-            setShadowLayer(6f, 0f, 1f, Color.argb(140, 0, 0, 0))
+            setShadowLayer(14f, 0f, 0f, Color.BLACK)
         }
         guidancePill.addView(guidanceHeadline)
         guidancePill.addView(guidanceSubtext)
@@ -310,7 +311,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         // Bottom bar — sci-fi dark navy
         val bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(225, 3, 4, 14))
+            setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(16), dp(14), dp(16), dp(36))
         }
 
@@ -319,6 +320,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(10))
+            visibility = View.GONE
         }
         sideBadge = TextView(this).apply {
             text = "In attesa…"
@@ -336,19 +338,26 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         bottomBar.addView(statsRow)
 
         // ANGOLO QUI / ALTEZZA QUI button — fucsia neon
+        val confirmBg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(255, 185, 18, 125))
+            setStroke(dp(3), Color.argb(200, 230, 60, 170))
+        }
         confirmCornerBtn = Button(this).apply {
-            text = "ANGOLO QUI"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            text = "✓"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f)
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(6).toFloat()
-                setColor(Color.argb(255, 185, 18, 125))
-                setStroke(dp(1), Color.argb(200, 230, 60, 170))
-            }
-            setPadding(dp(20), dp(12), dp(20), dp(12))
+            background = confirmBg
+            setPadding(0, 0, 0, 0)
             visibility = android.view.View.GONE
+            setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> { confirmBg.setStroke(dp(6), Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f) }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { confirmBg.setStroke(dp(3), Color.argb(200, 230, 60, 170)); setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f) }
+                }
+                false
+            }
             setOnClickListener { handlePerimeterTap() }
         }
         // confirmCornerBtn is added to mainBtnRow below — not here
@@ -411,59 +420,63 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         }
         openingEditPanel.addView(openingEditTitle)
 
-        // Riga spostamento laterale — frecce ◀ ▶ (non coordinate)
-        openingPosText    = addStepperRow(openingEditPanel, "Sposta",  "◀", "▶",
-            { nudgeOpening(+0.05f) }, { nudgeOpening(-0.05f) })
-        // Riga larghezza — resize simmetrico (si allarga da entrambi i lati)
-        openingWidthText  = addStepperRow(openingEditPanel, "Larghezza ↔",  "−", "+",
+        openingPosText    = addStepperRow(openingEditPanel, "Sposta",       "←", "→",
+            { nudgeOpening(-0.05f) }, { nudgeOpening(+0.05f) })
+        openingWidthText  = addStepperRow(openingEditPanel, "Larghezza ↔",  "←", "→",
             { adjustOpening(dW = -0.05f) }, { adjustOpening(dW = +0.05f) })
-        // Riga altezza apertura
-        openingHeightText = addStepperRow(openingEditPanel, "Altezza ↕",    "−", "+",
+        openingHeightText = addStepperRow(openingEditPanel, "Altezza ↕",    "↓", "↑",
             { adjustOpening(dH = -0.05f) }, { adjustOpening(dH = +0.05f) })
-        // Riga posizione verticale (quota da terra) — solo finestre — frecce ▼ ▲
         openingBottomRow  = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        openingBottomText = addStepperRow(openingBottomRow, "Quota",  "▼", "▲",
+        openingBottomText = addStepperRow(openingBottomRow, "Quota",        "↓", "↑",
             { adjustOpening(dB = -0.05f) }, { adjustOpening(dB = +0.05f) })
         openingEditPanel.addView(openingBottomRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        // Confirm / Delete row
-        val editBtnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, 0)
+        // Confirm / Delete
+        val editBtnRow = FrameLayout(this)
+        val confirmOpeningBg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(255, 185, 18, 125))
+            setStroke(dp(3), Color.argb(200, 230, 60, 170))
         }
         val confirmOpeningBtn = Button(this).apply {
-            text = "Conferma"
+            text = "✓"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f)
+            typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(5).toFloat()
-                setColor(Color.argb(255, 185, 18, 125))
-                setStroke(dp(1), Color.argb(200, 230, 60, 170))
+            background = confirmOpeningBg
+            setPadding(0, 0, 0, 0)
+            setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> { confirmOpeningBg.setStroke(dp(6), Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f) }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { confirmOpeningBg.setStroke(dp(3), Color.argb(200, 230, 60, 170)); setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f) }
+                }
+                false
             }
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
             setOnClickListener { confirmOpening() }
         }
         val deleteOpeningBtn = Button(this).apply {
-            text = "Elimina"
-            setTextColor(Color.argb(220, 255, 80, 80))
+            text = "🗑"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            setTextColor(Color.argb(255, 185, 18, 125))
             background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(5).toFloat()
-                setColor(Color.argb(180, 12, 4, 4))
-                setStroke(dp(1), Color.argb(160, 200, 40, 40))
+                shape = GradientDrawable.OVAL
+                setColor(Color.WHITE)
+                setStroke(dp(2), Color.argb(255, 185, 18, 125))
             }
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setPadding(0, 0, 0, 0)
             setOnClickListener { deleteEditingOpening() }
         }
-        editBtnRow.addView(confirmOpeningBtn, LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
-        editBtnRow.addView(deleteOpeningBtn, LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        openingEditPanel.addView(editBtnRow)
+        editBtnRow.addView(confirmOpeningBtn, FrameLayout.LayoutParams(dp(88), dp(88)).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        })
+        editBtnRow.addView(deleteOpeningBtn, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            marginEnd = dp(16)
+        })
+        openingEditPanel.addView(editBtnRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(96)
+        ).apply { topMargin = dp(12) })
 
         openingPhaseBar.addView(openingEditPanel)
         bottomBar.addView(openingPhaseBar, LinearLayout.LayoutParams(
@@ -473,51 +486,48 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         // Height control (post-chiusura, pre-opening)
         heightControlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(8))
             visibility = android.view.View.GONE
-        }
-        val heightLabel = TextView(this).apply {
-            text = "Altezza:"
-            setTextColor(Color.argb(200, 170, 200, 255))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(0, 0, dp(6), 0)
         }
         heightValueText = TextView(this).apply {
             text = "2.50m"
             setTextColor(Color.argb(255, 30, 235, 120))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 0, dp(8), 0)
+            visibility = View.GONE
         }
         val stepperBg = { GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE; cornerRadius = dp(4).toFloat()
-            setColor(Color.argb(160, 8, 10, 25)); setStroke(dp(1), Color.argb(100, 60, 100, 200))
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(180, 8, 10, 25))
+            setStroke(dp(1), Color.argb(100, 60, 100, 200))
         }}
         val btnHeightMinus = Button(this).apply {
-            text = "−"; setTextColor(Color.argb(220, 20, 215, 255))
+            text = "↓"
+            setTextColor(Color.argb(220, 20, 215, 255))
             background = stepperBg()
-            setPadding(dp(14), dp(4), dp(14), dp(4))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, 0)
             setOnClickListener {
                 wallHeightPreview = (wallHeightPreview - 0.1f).coerceAtLeast(1.80f)
                 heightValueText.text = "${"%.2f".format(wallHeightPreview)}m"
             }
         }
         val btnHeightPlus = Button(this).apply {
-            text = "+"; setTextColor(Color.argb(220, 20, 215, 255))
+            text = "↑"
+            setTextColor(Color.argb(220, 20, 215, 255))
             background = stepperBg()
-            setPadding(dp(14), dp(4), dp(14), dp(4))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, 0)
             setOnClickListener {
                 wallHeightPreview = (wallHeightPreview + 0.1f).coerceAtMost(5.00f)
                 heightValueText.text = "${"%.2f".format(wallHeightPreview)}m"
             }
         }
-        heightControlRow.addView(heightLabel)
-        heightControlRow.addView(btnHeightMinus, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        heightControlRow.addView(heightValueText)
-        heightControlRow.addView(btnHeightPlus, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        heightControlRow.addView(btnHeightMinus, LinearLayout.LayoutParams(dp(60), dp(60)).apply { marginEnd = dp(12) })
+        heightControlRow.addView(btnHeightPlus, LinearLayout.LayoutParams(dp(60), dp(60)))
         bottomBar.addView(heightControlRow)
 
         // ── Layout bottoni reference-style: [INDIETRO] [AZIONE PRIMARIA] ───────
@@ -555,20 +565,18 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(6) })
 
-        // Riga bottoni principale: [INDIETRO outlined] [CONFERMA fucsia]
-        val mainBtnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-        }
+        // Riga bottoni principale
+        val mainBtnRow = FrameLayout(this)
         cancelBtn = Button(this).apply {
-            text = "INDIETRO"
-            setTextColor(Color.argb(210, 180, 190, 220))
+            text = "↩"
+            setTextColor(Color.BLACK)
             background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE; cornerRadius = dp(5).toFloat()
-                setColor(Color.argb(130, 8, 10, 25)); setStroke(dp(1), Color.argb(130, 80, 100, 180))
+                shape = GradientDrawable.OVAL
+                setColor(Color.WHITE)
             }
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(0, 0, 0, 0)
             setOnClickListener {
                 if (perimeterCapture.canUndo) {
                     glSurfaceView.queueEvent {
@@ -580,12 +588,20 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 }
             }
         }
-        mainBtnRow.addView(cancelBtn, LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
-        mainBtnRow.addView(confirmCornerBtn, LinearLayout.LayoutParams(
-            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.5f))
+        val btnPairRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        btnPairRow.addView(cancelBtn, LinearLayout.LayoutParams(dp(64), dp(64)).apply { marginEnd = dp(15) })
+        btnPairRow.addView(confirmCornerBtn, LinearLayout.LayoutParams(dp(88), dp(88)))
+        mainBtnRow.addView(btnPairRow, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(58)
+        })
         bottomBar.addView(mainBtnRow, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(160)
         ).apply { bottomMargin = dp(8) })
 
         // Quality bar — ">>> BASSA  MEDIA  ALTA"
@@ -593,6 +609,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), dp(6), dp(4), dp(4))
+            visibility = View.GONE
         }
         val qualityDecor = TextView(this).apply {
             text = "> >> "; setTextColor(Color.argb(140, 30, 190, 255))
@@ -626,6 +643,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             typeface = Typeface.MONOSPACE
             setPadding(dp(6), dp(4), dp(6), dp(4))
             setBackgroundColor(Color.argb(160, 0, 0, 0))
+            visibility = View.GONE
         }
         root.addView(pcDebugOverlay, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -664,7 +682,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         root.addView(distanceLabel, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { gravity = Gravity.CENTER }).also {
-            distanceLabel.translationY = dp(120).toFloat()
+            distanceLabel.translationY = dp(90).toFloat()
         }
 
         return root
@@ -682,12 +700,14 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(4))
+            setPadding(0, 0, 0, dp(6))
         }
         val lbl = TextView(this).apply {
             text = label
             setTextColor(Color.argb(200, 170, 200, 255))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setShadowLayer(6f, 0f, 0f, Color.BLACK)
+            setPadding(0, 0, dp(8), 0)
         }
         val valTv = TextView(this).apply {
             text = "—"
@@ -695,23 +715,35 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
+            setShadowLayer(8f, 0f, 0f, Color.BLACK)
         }
+        val stepBg = { GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(180, 8, 10, 25))
+            setStroke(dp(1), Color.argb(100, 60, 100, 200))
+        }}
         val btnM = Button(this).apply {
-            text = minusLabel; setTextColor(Color.WHITE)
-            setBackgroundColor(Color.argb(180, 60, 60, 80))
-            setPadding(dp(10), dp(2), dp(10), dp(2))
+            text = minusLabel
+            setTextColor(Color.argb(220, 20, 215, 255))
+            background = stepBg()
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, 0)
             setOnClickListener { onMinus() }
         }
         val btnP = Button(this).apply {
-            text = plusLabel; setTextColor(Color.WHITE)
-            setBackgroundColor(Color.argb(180, 60, 60, 80))
-            setPadding(dp(10), dp(2), dp(10), dp(2))
+            text = plusLabel
+            setTextColor(Color.argb(220, 20, 215, 255))
+            background = stepBg()
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, 0, 0, 0)
             setOnClickListener { onPlus() }
         }
-        row.addView(lbl, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f))
-        row.addView(btnM, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(valTv, LinearLayout.LayoutParams(dp(60), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(btnP, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(lbl, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(btnM, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(8) })
+        row.addView(valTv, LinearLayout.LayoutParams(dp(56), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(btnP, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         container.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return valTv
     }
@@ -1161,10 +1193,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                         else                                    -> ReticleView.State.TRACKING
                     }
                     val (hl, sub) = guidanceText(trackingState, floorLocked, captureState, capturePhaseUi, ptCount)
-                    guidancePillBg.setColor(
-                        if (captureState == PerimeterCapture.State.CLOSED)
-                            Color.argb(210, 5, 28, 18) else Color.argb(195, 4, 5, 18)
-                    )
+                    guidancePillBg.setColor(Color.TRANSPARENT)
                     guidanceHeadline.text = hl
                     guidanceSubtext.text  = sub
                     sideBadge.text = when {
@@ -1589,10 +1618,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         // confirmCornerBtn: bottone primario CONFERMA (destra)
         confirmCornerBtn.visibility = if (!isClosed && floorAnchor.isLocked)
             android.view.View.VISIBLE else android.view.View.GONE
-        confirmCornerBtn.text = when (phase) {
-            PerimeterCapture.CapturePhase.AWAIT_HEIGHT -> "ALTEZZA QUI"
-            else -> "CONFERMA ANGOLO"
-        }
+        confirmCornerBtn.text = "✓"
 
         // heightBanner: visibile solo in AWAIT_HEIGHT
         heightBanner.visibility = if (phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT && !isClosed)
@@ -1631,7 +1657,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         updateActionBtn(state, canClose)
         undoBtn.isEnabled = canUndo && state != PerimeterCapture.State.CLOSED
         // cancelBtn: "INDIETRO" = undo se ha punti, "ANNULLA" = esci se nessun punto
-        cancelBtn.text = if (canUndo && state != PerimeterCapture.State.CLOSED) "INDIETRO" else "ANNULLA"
+        cancelBtn.text = "↩"
         val ptCount = perimeterCapture.pointCount
         val lastLen = perimeterCapture.lastSegmentLength()
         sideBadge.text = if (lastLen != null)
