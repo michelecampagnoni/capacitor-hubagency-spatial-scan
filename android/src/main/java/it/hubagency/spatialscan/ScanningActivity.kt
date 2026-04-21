@@ -110,6 +110,9 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     private val backgroundRenderer = BackgroundRenderer()
     private var session: Session?  = null
     private var sessionCreated     = false
+    // Dopo il floor lock disabilitiamo plane finding: riduce CPU ARCore e la probabilità
+    // di perdere il tracking su superfici uniformi. I piani già rilevati rimangono validi.
+    @Volatile private var planeFindingDisabled = false
 
     // ── Perimeter capture ────────────────────────────────────────────────────
     private val perimeterCapture  = PerimeterCapture()
@@ -142,6 +145,13 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var goniometerCenterPt:    FloatArray? = null  // ultimo punto floor
     @Volatile private var goniometerCurrentAngle: Float      = 0f    // angolo reticolo (rad)
     @Volatile private var goniometerSnapAngle:   Float?      = null  // angolo snappato (rad)
+
+    // ── Top reticle mode (auto da tilt camera) ───────────────────────────────
+    // Attivato automaticamente quando la camera punta verso l'alto oltre soglia.
+    // Proietta il raggio camera sul piano Y = lastFloorY + wallHeightPreview.
+    // Isteresi: ON a camFwdY > 0.20 (~12°), OFF a camFwdY < 0.10 (~6°).
+    @Volatile private var reticleTopMode      = false
+    @Volatile private var lastTopCursorWorld: FloatArray? = null
 
     // ── Freeze-at-close (anti-drift) ──────────────────────────────────────────
     // Al close: snapshot world coords calcolate dall'anchor. Immutabile.
@@ -792,7 +802,10 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 val rw = lastSnappedReticle ?: run {
                     val cx = screenWidth / 2f; val cy = screenHeight / 2f
                     lastArFrame?.let { f -> lastArCamera?.let { c ->
-                        screenToWorld(f, c, cx, cy, forceFloor = true)
+                        // Entrambe le modalità usano geometria pura dopo il floor lock.
+                        // Nessun ARCore hit test — elimina drift da plane detection.
+                        if (reticleTopMode) screenToWorldTopPlane(c)
+                        else screenToWorldFloorPlane(c)
                     }} ?: lastReticleWorld
                 } ?: return@queueEvent
                 perimeterCapture.addPoint(rw[0], rw[1], rw[2])
@@ -833,6 +846,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 lastReticleWorld = null; lastLivePreview = null; lastReticleWorldFree = null
                 lastSnappedReticle = null; reticleIsSnapped = false; reticleIsRealHit = false
                 goniometerCenterPt = null; goniometerCurrentAngle = 0f; goniometerSnapAngle = null
+                reticleTopMode = false; lastTopCursorWorld = null
+                planeFindingDisabled = false
                 reticleBufIdx = 0; reticleBufFill = 0
                 heightBufIdx  = 0; heightBufFill  = 0
                 mainHandler.post {
@@ -874,27 +889,90 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 camera.trackingState == TrackingState.TRACKING)
             pcSampler.sample(frame, lastFloorY)
 
+            // Dopo il floor lock: disabilita plane finding per ridurre CPU ARCore
+            // e la probabilità di perdere il tracking su superfici uniformi.
+            // Il posizionamento passa interamente alla geometria (screenToWorldFloorPlane /
+            // screenToWorldTopPlane). ARCore serve solo per camera pose (IMU + odometria).
+            if (floorAnchor.isLocked && !planeFindingDisabled) {
+                try {
+                    sess.configure(Config(sess).apply {
+                        planeFindingMode = Config.PlaneFindingMode.DISABLED
+                        updateMode       = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                        focusMode        = Config.FocusMode.AUTO
+                    })
+                    planeFindingDisabled = true
+                } catch (_: Exception) {}
+            }
+
             if (camera.trackingState == TrackingState.TRACKING) {
                 val phase = perimeterCapture.capturePhase
                 val cx = screenWidth / 2f; val cy = screenHeight / 2f
 
-                // ── Reticle floor (smoothed XZ, Y = floor) — sticky last-valid ────
-                // Solo per il PREVIEW visivo. Il confirm NON usa questi valori smoothed.
-                val rawRw = screenToWorld(frame, camera, cx, cy, forceFloor = true)
-                reticleIsRealHit = rawRw != null
-                if (rawRw != null) {
-                    val projY = if (floorAnchor.isLocked) lastFloorY else rawRw[1]
-                    reticleXBuf[reticleBufIdx] = rawRw[0]
-                    reticleZBuf[reticleBufIdx] = rawRw[2]
-                    reticleBufIdx = (reticleBufIdx + 1) % reticleXBuf.size
-                    if (reticleBufFill < reticleXBuf.size) reticleBufFill++
-                    var sumX = 0f; var sumZ = 0f
-                    for (k in 0 until reticleBufFill) { sumX += reticleXBuf[k]; sumZ += reticleZBuf[k] }
-                    val normRw = floatArrayOf(sumX / reticleBufFill, projY, sumZ / reticleBufFill)
-                    lastReticleWorld = normRw
-                    lastLivePreview = perimeterCapture.livePreview(normRw[0], normRw[1], normRw[2])
+                // ── Auto-switch TOP/FLOOR da inclinazione camera ──────────────────
+                // camFwd[1] = componente Y del vettore forward (positivo = camera guarda in su).
+                // Calcolato dal pose ARCore (già usa giroscopio + accelerometro internamente).
+                // Isteresi: attiva TOP a >0.20 (~12°), disattiva a <0.10 (~6°).
+                // Reset buffer al cambio di modalità per evitare blend di campioni misti.
+                val camFwdAuto = camera.pose.rotateVector(floatArrayOf(0f, 0f, -1f))
+                val canActivateTop = !openingMode &&
+                    (phase == PerimeterCapture.CapturePhase.AWAIT_SECOND_FLOOR ||
+                     phase == PerimeterCapture.CapturePhase.FLOOR_ONLY)
+                if (canActivateTop) {
+                    if (camFwdAuto[1] > 0.20f && !reticleTopMode) {
+                        reticleTopMode = true
+                        reticleBufIdx = 0; reticleBufFill = 0
+                    } else if (camFwdAuto[1] < 0.10f && reticleTopMode) {
+                        reticleTopMode = false
+                        reticleBufIdx = 0; reticleBufFill = 0
+                        lastTopCursorWorld = null
+                    }
+                } else if (reticleTopMode) {
+                    reticleTopMode = false
+                    lastTopCursorWorld = null
                 }
-                // else: sticky — lastReticleWorld e lastLivePreview restano quelli del frame precedente
+
+                // ── Reticle — floor mode (default) o top mode (auto da tilt) ──────
+                // TOP mode: proietta il raggio camera sul piano Y = lastFloorY + wallHeight.
+                // Permette di puntare il bordo soffitto/parete quando il pavimento è coperto.
+                val topModeActive = reticleTopMode && canActivateTop
+                if (topModeActive) {
+                    val topHit = screenToWorldTopPlane(camera)
+                    reticleIsRealHit = topHit != null
+                    if (topHit != null) {
+                        reticleXBuf[reticleBufIdx] = topHit[0]
+                        reticleZBuf[reticleBufIdx] = topHit[2]
+                        reticleBufIdx = (reticleBufIdx + 1) % reticleXBuf.size
+                        if (reticleBufFill < reticleXBuf.size) reticleBufFill++
+                        var sumX = 0f; var sumZ = 0f
+                        for (k in 0 until reticleBufFill) { sumX += reticleXBuf[k]; sumZ += reticleZBuf[k] }
+                        val normRw = floatArrayOf(sumX / reticleBufFill, lastFloorY, sumZ / reticleBufFill)
+                        lastReticleWorld = normRw
+                        lastLivePreview = perimeterCapture.livePreview(normRw[0], normRw[1], normRw[2])
+                        lastTopCursorWorld = floatArrayOf(normRw[0], lastFloorY + wallHeightPreview, normRw[2])
+                    }
+                    // else: sticky — lastReticleWorld e lastLivePreview restano quelli del frame precedente
+                } else {
+                    lastTopCursorWorld = null
+                    // Dopo floor lock: proiezione geometrica pura (raggio camera → piano Y=lastFloorY).
+                    // Nessun ARCore hit test — elimina la fonte principale di drift/confusione.
+                    // Prima del lock: screenToWorld per trovare superfici durante l'inizializzazione.
+                    val rawRw = if (floorAnchor.isLocked) screenToWorldFloorPlane(camera)
+                                else screenToWorld(frame, camera, cx, cy, forceFloor = false)
+                    reticleIsRealHit = rawRw != null
+                    if (rawRw != null) {
+                        val projY = if (floorAnchor.isLocked) lastFloorY else rawRw[1]
+                        reticleXBuf[reticleBufIdx] = rawRw[0]
+                        reticleZBuf[reticleBufIdx] = rawRw[2]
+                        reticleBufIdx = (reticleBufIdx + 1) % reticleXBuf.size
+                        if (reticleBufFill < reticleXBuf.size) reticleBufFill++
+                        var sumX = 0f; var sumZ = 0f
+                        for (k in 0 until reticleBufFill) { sumX += reticleXBuf[k]; sumZ += reticleZBuf[k] }
+                        val normRw = floatArrayOf(sumX / reticleBufFill, projY, sumZ / reticleBufFill)
+                        lastReticleWorld = normRw
+                        lastLivePreview = perimeterCapture.livePreview(normRw[0], normRw[1], normRw[2])
+                    }
+                    // else: sticky — lastReticleWorld e lastLivePreview restano quelli del frame precedente
+                }
 
                 // ── Goniometer snap ──────────────────────────────────────────────
                 // Centrato sull'ultimo punto confermato. Snap al raggio 1° più vicino.
@@ -925,7 +1003,9 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     if (xzL > 0.01f) floatArrayOf(cp2[0] + cf2[0] / xzL * 3f, lastFloorY, cp2[2] + cf2[2] / xzL * 3f)
                     else lastReticleWorld ?: floatArrayOf(cp2[0], lastFloorY, cp2[2])
                 }
-                val baseReticle = geoFloor
+                // In TOP mode: usa lastReticleWorld (XZ da piano superiore, già corretto)
+                // invece di geoFloor (XZ "3m avanti" quando camera guarda in alto → sbagliato).
+                val baseReticle = if (topModeActive) lastReticleWorld ?: geoFloor else geoFloor
                 goniometerCenterPt = gonioCenterPt
                 // Settore: direzione orizzontale della camera → segue il crosshair fisso
                 val camFwd = camera.pose.rotateVector(floatArrayOf(0f, 0f, -1f))
@@ -965,6 +1045,14 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     reticleIsSnapped    = false
                     goniometerSnapAngle = null
                 }
+
+                // ── Sync post-goniometro ──────────────────────────────────────────
+                // livePreview: aggiornata dall'output goniometro (XZ snappato o raw).
+                // lastTopCursorWorld: NON modificato qui — rimane all'XZ del mirino (normRw)
+                // impostato nel branch reticle. Il cursore arancione segue il centro schermo,
+                // non la posizione del goniometro.
+                val sr = lastSnappedReticle
+                if (gonioCenterPt != null && sr != null) lastLivePreview = sr
 
                 // ── Reticle libero con smoothing dedicato — solo AWAIT_HEIGHT ──
                 // Buffer separato da quello floor: reset automatico quando si esce dalla fase.
@@ -1017,7 +1105,8 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     goniometerCenter      = if (!openingMode && phase != PerimeterCapture.CapturePhase.AWAIT_HEIGHT && !perimeterCapture.state.let { it == PerimeterCapture.State.CLOSED }) goniometerCenterPt else null,
                     goniometerAngle       = goniometerCurrentAngle,
                     goniometerSnapAngle   = goniometerSnapAngle,
-                    currentFloorY         = lastFloorY
+                    currentFloorY         = lastFloorY,
+                    topCursorPoint        = lastTopCursorWorld
                 )
 
                 // Opening render (solo in opening mode)
@@ -1416,6 +1505,47 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         return null
     }
 
+    /**
+     * FLOOR mode geometrico: proietta il raggio camera verso il piano Y = lastFloorY.
+     * Usato dopo il floor lock in sostituzione di frame.hitTest() — nessuna dipendenza
+     * da ARCore plane detection / feature point tracking per il posizionamento XZ.
+     * Stessa logica del fallback in screenToWorld(), promossa a percorso primario.
+     * @return [X, lastFloorY, Z] se la camera punta verso il basso, null altrimenti (sticky).
+     */
+    private fun screenToWorldFloorPlane(camera: Camera): FloatArray? {
+        if (!floorAnchor.isLocked) return null
+        val camPos = camera.pose.translation
+        val camFwd = camera.pose.rotateVector(floatArrayOf(0f, 0f, -1f))
+        val dy     = camFwd[1]
+        if (dy > -0.01f) return null   // camera non punta verso il pavimento → sticky
+        val t = (lastFloorY - camPos[1]) / dy
+        if (t < 0.05f || t > 15f) return null
+        return floatArrayOf(camPos[0] + t * camFwd[0], lastFloorY, camPos[2] + t * camFwd[2])
+    }
+
+    /**
+     * TOP mode: proietta il raggio camera verso il piano Y = lastFloorY + wallHeightPreview.
+     * Non usa ARCore hit test — geometria pura, funziona anche con zero feature points.
+     *
+     * Quando l'utente punta la camera verso l'alto (bordo soffitto/parete),
+     * restituisce [X, lastFloorY, Z]: la proiezione verticale al pavimento.
+     * XZ identici al floor mode — stessa planimetria, sorgente diversa.
+     *
+     * @return [X, lastFloorY, Z] se la camera punta verso il piano superiore, null altrimenti.
+     */
+    private fun screenToWorldTopPlane(camera: Camera): FloatArray? {
+        if (!floorAnchor.isLocked) return null
+        val wallTopY = lastFloorY + wallHeightPreview
+        val camPos   = camera.pose.translation
+        val camFwd   = camera.pose.rotateVector(floatArrayOf(0f, 0f, -1f))
+        val dy       = camFwd[1]
+        // Camera deve puntare verso l'alto (dy > 0) per intersecare il piano superiore
+        if (dy < 0.01f) return null
+        val t = (wallTopY - camPos[1]) / dy
+        if (t < 0.05f || t > 15f) return null
+        return floatArrayOf(camPos[0] + t * camFwd[0], lastFloorY, camPos[2] + t * camFwd[2])
+    }
+
     // ── UI helpers ────────────────────────────────────────────────────────────
 
     private fun guidanceText(
@@ -1437,10 +1567,16 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             "Posizionati in un angolo" to "Punta alla BASE del muro · TAP"
         phase == PerimeterCapture.CapturePhase.AWAIT_HEIGHT ->
             "Imposta l'altezza delle pareti" to "Usa + / − per regolare · poi premi ALTEZZA QUI"
+        phase == PerimeterCapture.CapturePhase.AWAIT_SECOND_FLOOR && reticleTopMode ->
+            "Prima parete! Cammina lungo il muro" to "Cursore ALTO attivo · punta l'angolo superiore · TAP"
         phase == PerimeterCapture.CapturePhase.AWAIT_SECOND_FLOOR ->
             "Prima parete! Cammina lungo il muro" to "Punta alla BASE dell'angolo successivo · TAP"
+        perimeterCapture.canClose && reticleTopMode ->
+            "Aggiungi angoli o chiudi" to "Cursore ALTO · TAP per angolo · Chiudi per finire"
         perimeterCapture.canClose ->
             "Aggiungi angoli o chiudi" to "TAP per altro angolo · ↩ per correggere · 'Chiudi' per finire"
+        reticleTopMode ->
+            "Cammina verso il prossimo angolo" to "Cursore ALTO attivo · punta l'angolo superiore · TAP"
         else ->
             "Cammina verso il prossimo angolo" to "Punta alla giunzione muro-pavimento · TAP"
     }
@@ -1485,6 +1621,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         } else {
             heightControlRow.visibility = android.view.View.GONE
         }
+
     }
 
     private fun updateCaptureUI() {

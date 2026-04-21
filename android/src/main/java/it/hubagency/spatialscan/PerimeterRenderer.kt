@@ -51,6 +51,8 @@ class PerimeterRenderer {
         private val COLOR_WALL_GRID      = floatArrayOf(0.65f, 0.30f, 1.00f, 0.28f)
         // Griglia pavimento — iconic, violet/blu
         private val COLOR_FLOOR_GRID     = floatArrayOf(0.55f, 0.22f, 0.92f, 0.22f)
+        // Cursore TOP mode — arancione neon
+        private val COLOR_TOP_CURSOR     = floatArrayOf(1.00f, 0.65f, 0.10f, 1.00f)
 
         private val VERT_SRC = """
             uniform mat4 uMVP;
@@ -110,7 +112,8 @@ class PerimeterRenderer {
         goniometerCenter:    FloatArray? = null,  // null = goniometro nascosto
         goniometerAngle:     Float       = 0f,    // angolo corrente reticolo (rad)
         goniometerSnapAngle: Float?      = null,  // angolo snappato da evidenziare (rad)
-        currentFloorY:       Float?      = null   // lastFloorY da ScanningActivity
+        currentFloorY:       Float?      = null,  // lastFloorY da ScanningActivity
+        topCursorPoint:      FloatArray? = null   // [X, wallTopY, Z] quando TOP mode attivo
     ) {
         if (program == 0) return
 
@@ -199,28 +202,89 @@ class PerimeterRenderer {
         // Visibile da AWAIT_SECOND_FLOOR in poi (capturePhase != AWAIT_HEIGHT e
         // != AWAIT_FIRST_FLOOR). Mostra dove terminerebbe la parete corrente:
         // l'utente allinea questo edge con l'angolo reale della stanza.
+        // In TOP mode: l'edge è ancorato al cursore (mirino, topCursorPoint),
+        // non al ghost corner a terra (livePoint), così appare esattamente sotto il mirino.
         if (!isClosed && livePoint != null &&
             capturePhase != PerimeterCapture.CapturePhase.AWAIT_FIRST_FLOOR &&
             capturePhase != PerimeterCapture.CapturePhase.AWAIT_HEIGHT) {
             val topY = drawY + wallHeight
+            val vcx = if (topCursorPoint != null) topCursorPoint[0] else livePoint[0]
+            val vcz = if (topCursorPoint != null) topCursorPoint[2] else livePoint[2]
             GLES20.glEnable(GLES20.GL_BLEND)
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
             setColor(floatArrayOf(0.12f, 0.85f, 1.00f, 0.75f))
             GLES20.glLineWidth(3f)
             drawPrimitive(GLES20.GL_LINES, floatArrayOf(
-                livePoint[0], drawY, livePoint[2],
-                livePoint[0], topY,  livePoint[2]
+                vcx, drawY, vcz,
+                vcx, topY,  vcz
             ), 2)
             GLES20.glDisable(GLES20.GL_BLEND)
         }
 
-        // ── 5a. Goniometro a terra ─────────────────────────────────────────────
-        // Y: usa lastFloorY dal caller (stima floor attuale), non il Y del punto
-        // confermato che può avere drift ARCore. FLOOR_OFFSET evita z-fighting.
+        // ── 5e. Tracce al soffitto — mirror dei segmenti floor in TOP mode ─────
+        // Quando il telefono è inclinato verso l'alto, l'utente vede le tracce
+        // al piano superiore (Y = floor + wallHeight):
+        //   - Segmenti confermati ciano al soffitto (specchio del floor)
+        //   - Segmento live fucsia dal last confirmed al cursore (mirino)
+        //   - Dot vertex al soffitto
+        if (topCursorPoint != null && !isClosed &&
+            capturePhase != PerimeterCapture.CapturePhase.AWAIT_FIRST_FLOOR &&
+            capturePhase != PerimeterCapture.CapturePhase.AWAIT_HEIGHT) {
+            val topY = drawY + wallHeight
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            // Segmenti confermati al soffitto (ciano)
+            if (confirmedPts.size >= 2) {
+                val v = FloatArray(confirmedPts.size * 3)
+                confirmedPts.forEachIndexed { i, pt -> v[i*3]=pt[0]; v[i*3+1]=topY; v[i*3+2]=pt[2] }
+                setColor(COLOR_CONFIRMED); GLES20.glLineWidth(5f)
+                drawPrimitive(GLES20.GL_LINE_STRIP, v, confirmedPts.size)
+            }
+            // Segmento live al soffitto (fucsia, dall'ultimo punto al mirino)
+            if (confirmedPts.isNotEmpty()) {
+                val prev = confirmedPts.last()
+                setColor(COLOR_LIVE); GLES20.glLineWidth(6f)
+                drawPrimitive(GLES20.GL_LINES, floatArrayOf(
+                    prev[0], topY, prev[2],
+                    topCursorPoint[0], topY, topCursorPoint[2]
+                ), 2)
+            }
+            // Dot vertex al soffitto
+            if (confirmedPts.isNotEmpty()) {
+                val vd = FloatArray(confirmedPts.size * 3)
+                confirmedPts.forEachIndexed { i, pt -> vd[i*3]=pt[0]; vd[i*3+1]=topY+0.005f; vd[i*3+2]=pt[2] }
+                setColor(COLOR_DOT)
+                drawPrimitive(GLES20.GL_POINTS, vd, confirmedPts.size)
+            }
+            GLES20.glDisable(GLES20.GL_BLEND)
+        }
+
+        // ── 5d. Top cursor arancione — solo in TOP mode ───────────────────────
+        // Marcatore al piano superiore delle pareti (Y = floor + wallHeight).
+        // Mostra esattamente dove il raggio camera interseca il piano di copertura.
+        // L'edge verticale ciano (5c) lo collega visivamente al ghost corner a terra.
+        if (topCursorPoint != null) {
+            drawTopCursor(topCursorPoint[0], topCursorPoint[1], topCursorPoint[2])
+        }
+
+        // ── 5a. Goniometro — floor o wall-top secondo la modalità ────────────────
+        // FLOOR mode: disegnato sul piano pavimento (Y = lastFloorY).
+        // TOP mode:   disegnato sul piano superiore (Y = topCursorPoint[1] = floor + wallH).
+        //             L'utente guarda in alto → il goniometro deve essere visibile in alto.
+        //             Stessa geometria XZ, stesso calcolo snap — solo Y elevato.
+        //             Nessun ARCore aggiuntivo: tutto geometrico.
         if (goniometerCenter != null) {
-            val gonioY = (currentFloorY ?: goniometerCenter[1]) + FLOOR_OFFSET
+            val gonioY = if (topCursorPoint != null) topCursorPoint[1] + FLOOR_OFFSET
+                         else (currentFloorY ?: goniometerCenter[1]) + FLOOR_OFFSET
+            // In TOP mode il cursore è lontano dal centro goniometro (ultimo punto confermato).
+            // Il raggio snap viene esteso fino al cursore + 0.30m così è sempre visibile.
+            val snapRayLen = if (topCursorPoint != null) {
+                val dx = topCursorPoint[0] - goniometerCenter[0]
+                val dz = topCursorPoint[2] - goniometerCenter[2]
+                sqrt(dx * dx + dz * dz) + 0.30f
+            } else 0.50f
             drawGoniometer(goniometerCenter[0], gonioY, goniometerCenter[2],
-                           goniometerAngle, goniometerSnapAngle)
+                           goniometerAngle, goniometerSnapAngle, snapRayLen)
         }
 
         // ── 5b. Ghost corner — ciano se agganciato all'asse, fucsia altrimenti ──
@@ -397,6 +461,31 @@ class PerimeterRenderer {
             x-dia, y, z,   x, y, z-dia), 8)
     }
 
+    // ── Top cursor arancione (TOP mode) ────────────────────────────────────────
+
+    /**
+     * Crosshair arancione al piano superiore delle pareti.
+     * Stesso stile del ghost corner ma al livello wallTopY.
+     * Visibile solo quando reticleTopMode = true in ScanningActivity.
+     */
+    private fun drawTopCursor(x: Float, y: Float, z: Float) {
+        val ty = y + 0.004f; val arm = 0.08f; val dia = 0.06f
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        setColor(COLOR_TOP_CURSOR)
+        GLES20.glLineWidth(6f)
+        drawPrimitive(GLES20.GL_LINES, floatArrayOf(
+            x - arm, ty, z,  x + arm, ty, z,
+            x, ty, z - arm,  x, ty, z + arm), 4)
+        GLES20.glLineWidth(3f)
+        drawPrimitive(GLES20.GL_LINES, floatArrayOf(
+            x, ty, z-dia,   x+dia, ty, z,
+            x+dia, ty, z,   x, ty, z+dia,
+            x, ty, z+dia,   x-dia, ty, z,
+            x-dia, ty, z,   x, ty, z-dia), 8)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
     // ── Axis hints ─────────────────────────────────────────────────────────────
 
     private fun drawAxisHints(last: FloatArray, prev: FloatArray, baseY: Float) {
@@ -439,7 +528,8 @@ class PerimeterRenderer {
      */
     private fun drawGoniometer(
         cx: Float, y: Float, cz: Float,
-        reticleAngle: Float, snapAngle: Float?
+        reticleAngle: Float, snapAngle: Float?,
+        snapRayLen: Float = 0.50f   // default: appena oltre l'arco esterno (0.40+0.10)
     ) {
         val PI_F       = Math.PI.toFloat()
         val DEG1_RAD   = (PI_F / 180f)
@@ -546,12 +636,15 @@ class PerimeterRenderer {
         }
 
         // ── 6. Raggio snap — ciano pieno, buca entrambi gli archi ────────────
+        // snapRayLen: di default appena oltre l'arco esterno.
+        // In TOP mode viene passato pari a dist(center→cursor)+margine,
+        // così il raggio arriva fino al cursore anche quando è lontano.
         if (snapAngle != null) {
             setColor(CYAN_FULL)
             GLES20.glLineWidth(3f)
             drawPrimitive(GLES20.GL_LINES, floatArrayOf(
                 cx, y2, cz,
-                cx + cos(snapAngle) * (R_OUT + 0.10f), y2, cz + sin(snapAngle) * (R_OUT + 0.10f)
+                cx + cos(snapAngle) * snapRayLen, y2, cz + sin(snapAngle) * snapRayLen
             ), 2)
         }
 
