@@ -126,10 +126,16 @@ class OpeningRenderer {
         // Fill semitrasparente
         setColor(fillColor)
         drawPrimitive(GLES20.GL_TRIANGLE_FAN, quad, 4)
-        // Outline pieno e spesso
+        // Outline: 3 lati (sinistro, top, destro) — il bordo a terra è omesso
+        // per non sovrapporre linee colorate al perimetro ciano sul pavimento.
         setColor(outlineColor)
         GLES20.glLineWidth(lineW)
-        drawPrimitive(GLES20.GL_LINE_LOOP, quad, 4)
+        drawPrimitive(GLES20.GL_LINE_STRIP, floatArrayOf(
+            sx, yFloor, sz,
+            sx, yTop,   sz,
+            ex, yTop,   ez,
+            ex, yFloor, ez
+        ), 4)
     }
 
     // ── Opening box ───────────────────────────────────────────────────────────

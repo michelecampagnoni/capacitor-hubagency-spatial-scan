@@ -12,13 +12,15 @@ import kotlin.math.PI
  * Salvato in filesDir/hub_composition_{id}.json.
  */
 data class RoomComposition(
-    val id:           String,
-    val roomAId:      String,
-    val roomBId:      String,
-    val offsetX:      Float,   // metri: traslazione Room B rispetto ad A
-    val offsetZ:      Float,
-    val rotationRad:  Float,   // radianti: rotazione Room B
-    val confirmedAt:  Long
+    val id:                    String,
+    val roomAId:               String,
+    val roomBId:               String,
+    val offsetX:               Float,
+    val offsetZ:               Float,
+    val rotationRad:           Float,
+    val confirmedAt:           Long,
+    val combinedFloorPlanPath: String?  = null,  // PNG planimetria combinata
+    val isLocked:              Boolean  = false   // true = confermata, editing bloccato
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id",           id)
@@ -28,6 +30,8 @@ data class RoomComposition(
         put("offsetZ",      offsetZ)
         put("rotationDeg",  rotationRad * 180.0 / PI)
         put("confirmedAt",  confirmedAt)
+        put("isLocked",     isLocked)
+        if (combinedFloorPlanPath != null) put("combinedFloorPlanPath", combinedFloorPlanPath)
     }
 
     companion object {
@@ -37,22 +41,27 @@ data class RoomComposition(
             try {
                 File(context.filesDir, "hub_composition_${comp.id}.json")
                     .writeText(comp.toJson().toString())
-                Log.d(TAG, "saved composition id=${comp.id}")
+                Log.d(TAG, "saved composition id=${comp.id} locked=${comp.isLocked}")
             } catch (e: Exception) {
                 Log.e(TAG, "save failed: ${e.message}", e)
             }
         }
 
-        fun create(roomAId: String, roomBId: String,
-                   offsetX: Float, offsetZ: Float, rotationRad: Float): RoomComposition =
-            RoomComposition(
-                id          = UUID.randomUUID().toString(),
-                roomAId     = roomAId,
-                roomBId     = roomBId,
-                offsetX     = offsetX,
-                offsetZ     = offsetZ,
-                rotationRad = rotationRad,
-                confirmedAt = System.currentTimeMillis()
-            )
+        fun create(
+            roomAId: String, roomBId: String,
+            offsetX: Float, offsetZ: Float, rotationRad: Float,
+            combinedFloorPlanPath: String? = null,
+            isLocked: Boolean = false
+        ): RoomComposition = RoomComposition(
+            id                    = UUID.randomUUID().toString(),
+            roomAId               = roomAId,
+            roomBId               = roomBId,
+            offsetX               = offsetX,
+            offsetZ               = offsetZ,
+            rotationRad           = rotationRad,
+            confirmedAt           = System.currentTimeMillis(),
+            combinedFloorPlanPath = combinedFloorPlanPath,
+            isLocked              = isLocked
+        )
     }
 }
