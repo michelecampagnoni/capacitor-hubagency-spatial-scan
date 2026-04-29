@@ -7,6 +7,11 @@ export interface SpatialScanPlugin {
   stopScan(): Promise<ScanResult>;
   cancelScan(): Promise<void>;
   getScanStatus(): Promise<ScanStatus>;
+  /**
+   * Genera un PDF A3 (297×420mm a 150dpi) della planimetria dai dati spaziali salvati.
+   * Chiamare dopo onScanComplete. Il rendering è vettoriale, non uno scaling del PNG.
+   */
+  exportPdf(): Promise<{ pdfPath: string }>;
   addListener(eventName: 'onFrameUpdate', listenerFunc: (data: FrameUpdateEvent) => void): Promise<PluginListenerHandle>;
   addListener(eventName: 'onTrackingStateChanged', listenerFunc: (data: TrackingStateEvent) => void): Promise<PluginListenerHandle>;
   removeAllListeners(): Promise<void>;

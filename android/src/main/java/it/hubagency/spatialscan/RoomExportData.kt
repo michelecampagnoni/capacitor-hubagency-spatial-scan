@@ -32,8 +32,9 @@ data class ExportWall(
 )
 
 class RoomExportData(
-    val walls:      List<ExportWall>,
-    val dimensions: RoomDimensions
+    val walls:        List<ExportWall>,
+    val dimensions:   RoomDimensions,
+    val roomPolygons: List<Pair<String, List<Pair<Float, Float>>>> = emptyList()
 ) {
     companion object {
         fun fromRoomModel(rm: RoomModel): RoomExportData {

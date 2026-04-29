@@ -114,6 +114,34 @@ class SpatialScanPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun exportPdf(call: PluginCall) {
+        Thread {
+            val prefs = context.getSharedPreferences("hub_session", android.content.Context.MODE_PRIVATE)
+
+            // 1. Path PDF già generato in background al momento della scansione
+            val cached = prefs.getString("lastPdfPath", null)
+            if (cached != null && java.io.File(cached).exists()) {
+                call.resolve(JSObject().apply { put("pdfPath", cached) })
+                return@Thread
+            }
+
+            // 2. Fallback: rigenera dai JSON salvati (es. cache cancellata dall'OS)
+            val data = RoomDataLoader.buildExportData(context)
+            if (data == null) {
+                call.reject("Nessun dato di scansione disponibile", "NO_DATA")
+                return@Thread
+            }
+            val pdfPath = FloorPlanExporter.exportPdf(data, context.cacheDir)
+            if (pdfPath != null) {
+                prefs.edit().putString("lastPdfPath", pdfPath).apply()
+                call.resolve(JSObject().apply { put("pdfPath", pdfPath) })
+            } else {
+                call.reject("Generazione PDF fallita", "EXPORT_FAILED")
+            }
+        }.start()
+    }
+
+    @PluginMethod
     fun getScanStatus(call: PluginCall) {
         val isActive = ScanningActivity.instance != null
         call.resolve(JSObject().apply {

@@ -47,6 +47,7 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.sqrt
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import java.util.UUID
 
 /**
  * ScanningActivity — Guided Perimeter Capture + Opening Placement
@@ -185,13 +186,25 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     @Volatile private var hoveredWallId:  String?       = null
     @Volatile private var selectedWallId: String?       = null
     @Volatile private var editingOpening: OpeningModel? = null
-    @Volatile private var openingMode     = false
+    @Volatile private var openingMode = false
     // Metadati collegamento per ogni apertura classificata (keyed by OpeningModel.id)
     private val openingMetadataMap = mutableMapOf<String, OpeningMetadata>()
-    // Spec apertura ereditata dalla stanza precedente (da Intent)
-    private var linkedOpeningSpec:  LinkedOpeningSpec? = null
-    private var linkedSpecAccepted = false   // utente ha confermato il riuso
-    private var linkedSpecPlaced   = false   // spec già usata per il primo spawn
+    // Nome stanza corrente (chiesto all'inizio della scan)
+    private var currentRoomName = "Stanza"
+    // Classificazione in attesa di confirm: openingId → (status, linkTarget, wallIndex)
+    private val pendingClassification = mutableMapOf<String, Triple<ConnectionStatus, UnlinkedOpening?, Int>>()
+    // Aperture PENDING da aggiungere all'UnlinkedOpeningStore dopo il salvataggio
+    private val pendingUnlinkedOpenings = mutableListOf<Pair<String, UnlinkedOpening>>()
+    // Aperture da aggiornare bilateralmente nella stanza sorgente dopo il salvataggio
+    private val pendingLinkUpdates = mutableListOf<UnlinkedOpening>()
+    // Se valorizzato, apre il Composer automaticamente dopo il salvataggio
+    private var pendingComposerRoomId: String? = null
+    private var pendingComposerLinkKind: String = ""
+    private var pendingComposerLinkWidth: Float = 0f
+    private var pendingComposerParentOpeningId: String = ""  // ID esatto apertura nel parent
+    private var pendingComposerNewOpeningId: String = ""     // ID esatto apertura nel new room
+    // Etichetta utente per aperture PENDING (openingId → label)
+    private val pendingLabels = mutableMapOf<String, String>()
 
     // ── Legacy (non attivi) ───────────────────────────────────────────────────
     @Suppress("unused") private val confirmedWallRenderer  = ConfirmedWallRenderer()
@@ -210,12 +223,43 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
-        linkedOpeningSpec = LinkedOpeningSpec.fromIntent(intent)
         @Suppress("DEPRECATION")
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Pulisce i dati solo se la sessione precedente è stata chiusa esplicitamente con "No"
+        if (!intent.getBooleanExtra("isContinuation", false)) {
+            val prefs = getSharedPreferences("hub_session", android.content.Context.MODE_PRIVATE)
+            if (prefs.getBoolean("sessionEnded", false)) {
+                clearSessionData()
+                prefs.edit().putBoolean("sessionEnded", false).apply()
+                Log.d("HUB_DIAG", "clearSessionData: sessione precedente chiusa, dati rimossi")
+            } else {
+                Log.d("HUB_DIAG", "startScan fresh: sessione non terminata, dati preservati")
+            }
+        }
+
         setContentView(buildLayout())
         wireListeners()
+        showRoomNameDialog()
+    }
+
+    /** Cancella tutti i file di sessione (stanze, grafo, aperture non collegate) e il path PDF in cache. */
+    private fun clearSessionData() {
+        try {
+            filesDir.listFiles()?.forEach { f ->
+                val n = f.name
+                if (n == "hub_rooms.json" || n == "hub_graph.json" || n == "hub_unlinked_openings.json"
+                    || n.startsWith("hub_room_")) {
+                    f.delete()
+                }
+            }
+            getSharedPreferences("hub_session", MODE_PRIVATE)
+                .edit().remove("lastPdfPath").apply()
+            Log.d("HUB_DIAG", "clearSessionData: dati sessione precedente rimossi")
+        } catch (e: Exception) {
+            Log.e("HUB_DIAG", "clearSessionData failed: ${e.message}")
+        }
     }
 
     override fun onResume() {
@@ -240,7 +284,18 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     @Deprecated("Deprecated in Java")
-    override fun onBackPressed() { cancelScanAndFinish() }
+    override fun onBackPressed() {
+        if (perimeterCapture.canUndo) {
+            // Ha punti → undo ultimo vertice (comportamento storico)
+            glSurfaceView.queueEvent {
+                perimeterCapture.undo()
+                mainHandler.post { updateCaptureUI() }
+            }
+        } else {
+            // Nessun punto → offri uscita sicura
+            exitScanSafely()
+        }
+    }
 
     // ── Layout ────────────────────────────────────────────────────────────────
 
@@ -422,7 +477,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
         openingPosText    = addStepperRow(openingEditPanel, "Sposta",       "←", "→",
             { nudgeOpening(-0.05f) }, { nudgeOpening(+0.05f) })
-        openingWidthText  = addStepperRow(openingEditPanel, "Larghezza ↔",  "←", "→",
+        openingWidthText  = addStepperRow(openingEditPanel, "Larghezza ↔",  "−", "+",
             { adjustOpening(dW = -0.05f) }, { adjustOpening(dW = +0.05f) })
         openingHeightText = addStepperRow(openingEditPanel, "Altezza ↕",    "↓", "↑",
             { adjustOpening(dH = -0.05f) }, { adjustOpening(dH = +0.05f) })
@@ -584,7 +639,7 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                         mainHandler.post { updateCaptureUI() }
                     }
                 } else {
-                    cancelScanAndFinish()
+                    exitScanSafely()
                 }
             }
         }
@@ -1146,9 +1201,11 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                 if (openingMode && rm != null) {
                     val reticle = lastReticleWorld
                     if (reticle != null) hoveredWallId = pickWall(reticle, rm)
-                    // Usa frozenFloorY: il pavimento è congelato al momento del close,
-                    // nessuna dipendenza da lastFloorY live.
-                    val baseY = frozenFloorY ?: lastFloorY
+                    // Usa la stessa Y base di PerimeterRenderer (confirmedPts[0][1])
+                    // per garantire che il fill del muro parta esattamente dal ciano a terra.
+                    val baseY = currentWorldPts.firstOrNull()?.get(1)
+                        ?: frozenFloorY
+                        ?: lastFloorY
                     openingRenderer.draw(rm, baseY, hoveredWallId, selectedWallId, viewMatrix, projMatrix)
                 }
             }
@@ -1305,42 +1362,46 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             actionBtn.setBackgroundColor(Color.argb(255, 18, 90, 180))
             actionBtn.isEnabled              = true
             undoBtn.visibility               = android.view.View.GONE
-            guidanceHeadline.text            = "Aggiungi aperture"
-            guidanceSubtext.text             = "Punta un muro e toccalo per selezionarlo"
-            // Offri il riuso dell'apertura collegata (se spec presente e non ancora offerta)
-            val spec = linkedOpeningSpec
-            if (spec != null && !linkedSpecAccepted) showLinkedSpecBanner(spec)
+            guidanceHeadline.text = "Aggiungi aperture"
+            guidanceSubtext.text  = "Punta un muro e toccalo per selezionarlo"
         }
     }
 
     private fun handleOpeningTap() {
         val wid = hoveredWallId ?: return
         selectedWallId = wid
-        mainHandler.post {
-            openingTypeRow.visibility = android.view.View.VISIBLE
-            openingEditPanel.visibility = android.view.View.GONE
-            guidanceSubtext.text = "Scegli il tipo di apertura"
-        }
+        mainHandler.post { showOpeningTypeDialog() }
     }
 
+    /** Spawn interno usato dai pulsanti tipo (backward-compat, non mostrati in UI). */
     private fun spawnOpening(kind: OpeningKind) {
+        spawnWithClassification(kind, ConnectionStatus.EXTERNAL, null)
+    }
+
+    /**
+     * Crea un'apertura sul muro selezionato con classificazione esplicita.
+     * @param status  EXTERNAL / PENDING / LINKED
+     * @param target  entry UnlinkedOpening da collegare (solo se LINKED)
+     */
+    private fun spawnWithClassification(
+        kind:        OpeningKind,
+        status:      ConnectionStatus,
+        target:      UnlinkedOpening?,
+        customLabel: String = ""
+    ) {
         val wid  = selectedWallId ?: return
         val rm   = roomModel      ?: return
         val wall = rm.walls.find { it.id == wid } ?: return
 
-        // Riusa dimensioni dall'apertura collegata (se accettata e non ancora piazzata)
-        val spec   = linkedOpeningSpec?.takeIf { linkedSpecAccepted && !linkedSpecPlaced }
-        val width  = spec?.width  ?: kind.defaultWidth
-        val height = spec?.height ?: kind.defaultHeight
-        val bottom = spec?.bottom ?: kind.defaultBottom
-        if (spec != null) linkedSpecPlaced = true
+        val width  = target?.width  ?: kind.defaultWidth
+        val height = target?.height ?: kind.defaultHeight
+        val bottom = target?.bottom ?: kind.defaultBottom
 
-        val defaultOffset = ((wall.length - width) / 2f).coerceAtLeast(0.10f)
         val opening = OpeningModel(
             id              = "op_${System.currentTimeMillis()}",
             wallId          = wid,
             kind            = kind,
-            offsetAlongWall = defaultOffset,
+            offsetAlongWall = ((wall.length - width) / 2f).coerceAtLeast(0.10f),
             width           = width,
             bottom          = bottom,
             height          = height
@@ -1348,6 +1409,11 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
         wall.clampOpening(opening)
         wall.openings.add(opening)
         editingOpening = opening
+
+        // Registra classificazione per confirmOpening()
+        val wallIdx = rm.walls.indexOfFirst { it.id == wid }.coerceAtLeast(0)
+        pendingClassification[opening.id] = Triple(status, target, wallIdx)
+        if (customLabel.isNotEmpty()) pendingLabels[opening.id] = customLabel
 
         mainHandler.post { showOpeningEditPanel(opening) }
     }
@@ -1399,71 +1465,79 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     }
 
     private fun confirmOpening() {
-        val confirmed  = editingOpening   // cattura prima di azzerare
+        val confirmed  = editingOpening
         editingOpening = null
         selectedWallId = null
         mainHandler.post {
             openingEditPanel.visibility = android.view.View.GONE
             openingTypeRow.visibility   = android.view.View.GONE
             guidanceSubtext.text = "Punta un altro muro o premi Esporta"
-            // Mostra dialog classificazione solo per porte (non finestre)
-            if (confirmed != null && confirmed.kind != OpeningKind.WINDOW) {
-                showConnectionDialog(confirmed)
-            }
+            if (confirmed != null) applyClassification(confirmed)
         }
     }
 
-    /** Dialog classificazione: esterna / interna (con o senza collegamento). */
-    private fun showConnectionDialog(opening: OpeningModel) {
-        val rooms   = RoomHistoryManager.loadAll(this)
-        val options = mutableListOf("Esterna / non collegare", "Interna — collegherò dopo")
-        if (rooms.isNotEmpty()) options.add("Interna — collega ora")
+    /** Applica la classificazione salvata in pendingClassification per l'apertura confermata. */
+    private fun applyClassification(opening: OpeningModel) {
+        val (status, target, wallIdx) = pendingClassification.remove(opening.id)
+            ?: Triple(ConnectionStatus.EXTERNAL, null, 0)
+        Log.d("HUB_DIAG", "applyClassification id=${opening.id} status=$status target=${target?.sourceRoomName}")
 
-        var selected = 0
-        AlertDialog.Builder(this)
-            .setTitle("Tipo apertura")
-            .setSingleChoiceItems(options.toTypedArray(), 0) { _, which -> selected = which }
-            .setPositiveButton("OK") { _, _ ->
-                when (selected) {
-                    0 -> openingMetadataMap[opening.id] = OpeningMetadata(
-                            openingId = opening.id, wallId = opening.wallId,
-                            isInternal = false, linkedRoomId = null, connectionLabel = null)
-                    1 -> openingMetadataMap[opening.id] = OpeningMetadata(
-                            openingId = opening.id, wallId = opening.wallId,
-                            isInternal = true,  linkedRoomId = null, connectionLabel = null)
-                    2 -> showRoomPickerDialog(opening, rooms)
+        when (status) {
+            ConnectionStatus.EXTERNAL -> {
+                openingMetadataMap[opening.id] = OpeningMetadata(
+                    openingId        = opening.id,
+                    wallId           = opening.wallId,
+                    isInternal       = false,
+                    linkedRoomId     = null,
+                    connectionLabel  = null,
+                    connectionStatus = ConnectionStatus.EXTERNAL
+                )
+            }
+            ConnectionStatus.PENDING -> {
+                openingMetadataMap[opening.id] = OpeningMetadata(
+                    openingId        = opening.id,
+                    wallId           = opening.wallId,
+                    isInternal       = true,
+                    linkedRoomId     = null,
+                    connectionLabel  = null,
+                    connectionStatus = ConnectionStatus.PENDING
+                )
+                // Aggiunto allo store dopo il salvataggio (serve sourceRoomId reale)
+                pendingUnlinkedOpenings.add(opening.id to UnlinkedOpening(
+                    id             = "uop_${UUID.randomUUID()}",
+                    sourceRoomId   = "",   // popolato in doStopScan dopo save
+                    sourceRoomName = currentRoomName,
+                    openingId      = opening.id,
+                    kind           = opening.kind,
+                    width          = opening.width,
+                    height         = opening.height,
+                    bottom         = opening.bottom,
+                    wallIndex      = wallIdx,
+                    customLabel    = pendingLabels.remove(opening.id) ?: ""
+                ))
+            }
+            ConnectionStatus.LINKED -> {
+                if (target != null) {
+                    openingMetadataMap[opening.id] = OpeningMetadata(
+                        openingId        = opening.id,
+                        wallId           = opening.wallId,
+                        isInternal       = true,
+                        linkedRoomId     = target.sourceRoomId,
+                        connectionLabel  = target.sourceRoomName,
+                        connectionStatus = ConnectionStatus.LINKED
+                    )
+                    pendingLinkUpdates.add(target)
+                    // Trigger Composer automatico dopo il salvataggio
+                    if (pendingComposerRoomId == null) {
+                        pendingComposerRoomId          = target.sourceRoomId
+                        pendingComposerLinkKind        = target.kind.name
+                        pendingComposerLinkWidth       = target.width
+                        pendingComposerParentOpeningId = target.openingId  // ID esatto nel parent
+                        pendingComposerNewOpeningId    = opening.id        // ID esatto nel new room
+                    }
                 }
             }
-            .setNegativeButton("Salta") { _, _ -> }
-            .setCancelable(false)
-            .show()
-    }
-
-    /** Secondo step: scelta stanza da collegare (solo se history non vuota). */
-    private fun showRoomPickerDialog(opening: OpeningModel, rooms: List<RoomRecord>) {
-        val names = rooms.map { it.name }.toTypedArray()
-        var selectedIdx = 0
-        AlertDialog.Builder(this)
-            .setTitle("Collega a quale stanza?")
-            .setSingleChoiceItems(names, 0) { _, which -> selectedIdx = which }
-            .setPositiveButton("Collega") { _, _ ->
-                openingMetadataMap[opening.id] = OpeningMetadata(
-                    openingId       = opening.id,
-                    wallId          = opening.wallId,
-                    isInternal      = true,
-                    linkedRoomId    = rooms[selectedIdx].id,
-                    connectionLabel = rooms[selectedIdx].name
-                )
-            }
-            .setNegativeButton("Salta") { _, _ ->
-                // Rimane interna ma senza collegamento risolto
-                openingMetadataMap[opening.id] = OpeningMetadata(
-                    openingId = opening.id, wallId = opening.wallId,
-                    isInternal = true, linkedRoomId = null, connectionLabel = null
-                )
-            }
-            .setCancelable(false)
-            .show()
+        }
     }
 
     private fun deleteEditingOpening() {
@@ -1670,177 +1744,208 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
     fun requestStop() { glSurfaceView.queueEvent { doStopScan() } }
 
     fun cancelScanAndFinish() {
-        // Chiude la session SUL GL thread per evitare SIGSEGV in ArSession_update:
-        // se chiamato dal main thread mentre onDrawFrame è in esecuzione, la close()
-        // può causare null-dereference nel codice nativo ARCore.
         glSurfaceView.queueEvent {
             session?.pause()
             session?.close()
             session = null
         }
         setResult(RESULT_CANCELED)
-        finish()
+        exitScanSafely()
+    }
+
+    /**
+     * Se ci sono stanze già salvate nella sessione, mostra "Vuoi scansionare un altro ambiente?"
+     * così l'utente non viene sbattuto fuori all'app JS.
+     * Se non ci sono stanze, chiude direttamente.
+     */
+    private fun exitScanSafely() {
+        val hasSavedRooms = RoomHistoryManager.loadAll(this).isNotEmpty()
+        if (hasSavedRooms) {
+            showContinueScanDialog { finish() }
+        } else {
+            finish()
+        }
     }
 
     fun doStopScan() {
         val result = buildResult()
         session?.pause(); session?.close(); session = null
         mainHandler.post {
-            showNamingDialogAndSave(result) { savedRecord ->
-                onScanComplete?.invoke(result)
-                val cb = onScanResult
-                if (cb != null) { cb(result); onScanResult = null }
-                else pendingResult = result
-                offerComposer(savedRecord) {
-                    showContinueScanDialog(result, savedRecord) {
-                        setResult(RESULT_OK); finish()
+            val savedRecord = if (result.optBoolean("success", false)) {
+                try { RoomHistoryManager.save(this, result, currentRoomName) }
+                catch (e: Exception) { Log.e("ScanningActivity", "room save failed: ${e.message}", e); null }
+            } else null
+            val realRoomId = savedRecord?.id ?: ""
+
+            // Processa aperture PENDING → UnlinkedOpeningStore
+            for ((_, entry) in pendingUnlinkedOpenings) {
+                UnlinkedOpeningStore.add(this, entry.copy(sourceRoomId = realRoomId))
+            }
+            pendingUnlinkedOpenings.clear()
+
+            // Processa collegamenti bilaterali (LINKED)
+            for (target in pendingLinkUpdates) {
+                RoomHistoryManager.updateOpeningMetadata(
+                    context        = this,
+                    roomId         = target.sourceRoomId,
+                    openingId      = target.openingId,
+                    linkedRoomId   = realRoomId,
+                    linkedRoomName = currentRoomName
+                )
+                UnlinkedOpeningStore.remove(this, target.id)
+            }
+            pendingLinkUpdates.clear()
+
+            onScanComplete?.invoke(result)
+            val cb = onScanResult
+            if (cb != null) { cb(result); onScanResult = null }
+            else pendingResult = result
+
+            // Apri sempre il Composer dopo il salvataggio.
+            // Se c'è un collegamento bilaterale → modalità composizione (controlli posizionamento).
+            // Altrimenti → modalità preview (solo visualizzazione planimetria stanza).
+            // Il dialog "Vuoi scansionare un altro ambiente?" viene mostrato dal Composer dopo
+            // la conferma, non qui — per evitare che l'utente lo accetti prima di aver
+            // posizionato/confermato il Composer.
+            val composerRoomId = pendingComposerRoomId
+            pendingComposerRoomId = null
+            Log.d("HUB_DIAG", "doStopScan: savedRecord=${savedRecord?.id} composerRoomId=$composerRoomId pendingLinks=${pendingLinkUpdates.size}")
+
+            if (savedRecord != null) {
+                // Cerca un room "ancora" su cui agganciare la nuova stanza nel Composer.
+                // Priorità: (1) room LINKED esplicito, (2) qualsiasi room già nel grafo,
+                // (3) qualsiasi altra stanza salvata (root del grafo).
+                val otherRooms = RoomHistoryManager.loadAll(this).filter { it.id != savedRecord.id }
+                val anchorRoomId = composerRoomId
+                    ?: CompositionGraph.loadAll(this).firstOrNull()?.roomId
+                    ?: otherRooms.lastOrNull()?.id
+
+                if (anchorRoomId != null) {
+                    Log.d("HUB_DIAG", "→ Composer COMPOSE anchor=$anchorRoomId new=${savedRecord.id} linked=${composerRoomId != null}")
+                    val next = Intent(this, RoomComposerActivity::class.java).apply {
+                        putExtra("parentRoomId", anchorRoomId)
+                        putExtra("newRoomId",    savedRecord.id)
+                        if (composerRoomId != null) {
+                            putExtra("linkKind",            pendingComposerLinkKind)
+                            putExtra("linkWidth",           pendingComposerLinkWidth)
+                            putExtra("linkParentOpeningId", pendingComposerParentOpeningId)
+                            putExtra("linkNewOpeningId",    pendingComposerNewOpeningId)
+                        }
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
+                    startActivity(next)
+                    setResult(RESULT_OK); finish()
+                } else {
+                    // Prima scan in assoluto: nessuna stanza precedente, niente da comporre
+                    Log.d("HUB_DIAG", "→ prima scan, showContinueScanDialog diretta")
+                    showContinueScanDialog { setResult(RESULT_OK); finish() }
                 }
+            } else {
+                Log.d("HUB_DIAG", "→ savedRecord null, showContinueScanDialog diretta")
+                showContinueScanDialog { setResult(RESULT_OK); finish() }
             }
         }
-    }
-
-    private fun showNamingDialogAndSave(result: JSObject, onDone: (RoomRecord?) -> Unit) {
-        // Se la scansione non è valida, salta il salvataggio e prosegui
-        if (!result.optBoolean("success", false)) { onDone(null); return }
-
-        val input = EditText(this).apply {
-            hint = "es. salotto, cucina, corridoio"
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Nome stanza")
-            .setView(input)
-            .setPositiveButton("Salva") { _, _ ->
-                val saved = try {
-                    val name = input.text.toString().trim().ifEmpty { "Stanza" }
-                    RoomHistoryManager.save(this, result, name)
-                } catch (e: Exception) {
-                    Log.e("ScanningActivity", "room save failed: ${e.message}", e)
-                    null
-                }
-                onDone(saved)
-            }
-            .setNegativeButton("Salta") { _, _ -> onDone(null) }
-            .setCancelable(false)
-            .show()
     }
 
     // ── Multi-room workflow ───────────────────────────────────────────────────
 
-    /** Banner offerta riuso apertura — mostrato all'ingresso in opening mode. */
-    private fun showLinkedSpecBanner(spec: LinkedOpeningSpec) {
-        val label = "${spec.kind.label} ${String.format("%.2f", spec.width)}m × ${String.format("%.2f", spec.height)}m"
+    /** Chiede il nome della stanza all'inizio della scan. */
+    private fun showRoomNameDialog() {
+        val input = EditText(this).apply {
+            hint = "es. salotto, cucina, corridoio"
+            setText(currentRoomName)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
         AlertDialog.Builder(this)
-            .setTitle("Apertura collegata disponibile")
-            .setMessage("Dalla stanza \"${spec.sourceRoomName}\" c'è una $label.\n\nVuoi usarne le misure per la prima apertura di questo ambiente?")
-            .setPositiveButton("Sì, usa queste misure") { _, _ ->
-                linkedSpecAccepted = true
-                guidanceSubtext.text = "Seleziona un muro — misure ${spec.kind.label} pronte"
+            .setTitle("Nome stanza")
+            .setView(input)
+            .setPositiveButton("Inizia") { _, _ ->
+                currentRoomName = input.text.toString().trim().ifEmpty { "Stanza" }
             }
-            .setNegativeButton("No, uso misure standard") { _, _ ->
-                linkedOpeningSpec = null  // ignora la spec
+            .setNegativeButton("Annulla") { _, _ -> cancelScanAndFinish() }
+            .setCancelable(false)
+            .show()
+    }
+
+
+    /** Dialog tipo + classificazione apertura. */
+    private fun showOpeningTypeDialog() {
+        data class Entry(val label: String, val action: () -> Unit)
+
+        val unlinked = UnlinkedOpeningStore.loadAll(this)
+        Log.d("HUB_DIAG", "showOpeningTypeDialog: ${unlinked.size} unlinked openings disponibili")
+        for (u in unlinked) {
+            Log.d("HUB_DIAG", "  → Collega: '${u.sourceRoomName}' label='${u.customLabel}' kind=${u.kind} w=${u.width}")
+        }
+
+        val entries = mutableListOf<Entry>()
+
+        // Se esistono stanze a cui collegarsi, quelle sono le prime opzioni — nessuna ambiguità
+        for (u in unlinked) {
+            val dest = u.customLabel.ifEmpty { u.sourceRoomName }
+            val lbl  = "↔ Collega a \"$dest\" (${"%.2f".format(u.width)}m)"
+            entries.add(Entry(lbl) { spawnWithClassification(u.kind, ConnectionStatus.LINKED, u) })
+        }
+
+        // Opzioni esterne (sempre disponibili)
+        entries.add(Entry("Porta d'ingresso (esterna)") { spawnWithClassification(OpeningKind.DOOR,   ConnectionStatus.EXTERNAL, null) })
+        entries.add(Entry("Finestra")                   { spawnWithClassification(OpeningKind.WINDOW, ConnectionStatus.EXTERNAL, null) })
+
+        // "Nuova stanza" solo se non ci sono già stanze disponibili (prima scan),
+        // oppure come opzione di fondo per porte verso stanze non ancora scansionate
+        entries.add(Entry("Porta interna — nuova stanza")         { showPendingLabelDialog(OpeningKind.DOOR) })
+        entries.add(Entry("Portafinestra interna — nuova stanza") { showPendingLabelDialog(OpeningKind.FRENCH_DOOR) })
+
+        AlertDialog.Builder(this)
+            .setTitle(if (unlinked.isNotEmpty()) "Collega apertura" else "Tipo apertura")
+            .setItems(entries.map { it.label }.toTypedArray()) { _, which -> entries[which].action() }
+            .setNegativeButton("Annulla", null)
+            .show()
+    }
+
+    /** Chiede l'etichetta destinazione per un'apertura interna nuova (PENDING). */
+    private fun showPendingLabelDialog(kind: OpeningKind) {
+        val input = EditText(this).apply {
+            hint = "es. cucina, salotto, bagno"
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Verso quale ambiente porta?")
+            .setView(input)
+            .setPositiveButton("OK") { _, _ ->
+                spawnWithClassification(kind, ConnectionStatus.PENDING, null,
+                    input.text.toString().trim())
+            }
+            .setNegativeButton("Salta") { _, _ ->
+                spawnWithClassification(kind, ConnectionStatus.PENDING, null, "")
             }
             .setCancelable(false)
             .show()
     }
 
-    /** Offre la composizione planimetrica se questa è una scan collegata (linkedOpeningSpec != null). */
-    private fun offerComposer(savedRecord: RoomRecord?, onDone: () -> Unit) {
-        val spec = linkedOpeningSpec
-        if (spec == null || spec.sourceRoomId.isEmpty() || savedRecord == null) { onDone(); return }
-        AlertDialog.Builder(this)
-            .setTitle("Planimetria multi-stanza")
-            .setMessage("Vuoi comporre la planimetria con \"${spec.sourceRoomName}\"?")
-            .setPositiveButton("Sì, componi") { _, _ ->
-                val next = Intent(this, RoomComposerActivity::class.java).apply {
-                    putExtra("roomAId",   spec.sourceRoomId)
-                    putExtra("roomBId",   savedRecord.id)
-                    putExtra("linkKind",  spec.kind.name)
-                    putExtra("linkWidth", spec.width)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(next)
-                onDone()
-            }
-            .setNegativeButton("Non ora") { _, _ -> onDone() }
-            .setCancelable(false)
-            .show()
-    }
-
-    /** Step 1 — "Vuoi scansionare un altro ambiente?" */
-    private fun showContinueScanDialog(result: JSObject, savedRecord: RoomRecord?, onFinish: () -> Unit) {
+    /** "Vuoi scansionare un altro ambiente?" — sì/no, riavvio semplice. */
+    private fun showContinueScanDialog(onFinish: () -> Unit) {
         AlertDialog.Builder(this)
             .setTitle("Scan completata")
             .setMessage("Vuoi scansionare un altro ambiente?")
-            .setPositiveButton("Sì") { _, _ -> showConnectionChoiceDialog(result, savedRecord, onFinish) }
-            .setNegativeButton("No")  { _, _ -> onFinish() }
-            .setCancelable(false)
-            .show()
-    }
-
-    /** Step 2 — "L'ambiente si collega tramite un'apertura?" */
-    private fun showConnectionChoiceDialog(result: JSObject, savedRecord: RoomRecord?, onFinish: () -> Unit) {
-        AlertDialog.Builder(this)
-            .setTitle("Collegamento")
-            .setMessage("Il nuovo ambiente si collega tramite un'apertura già definita?")
-            .setPositiveButton("Sì") { _, _ -> showOpeningPickerForRestart(result, savedRecord, onFinish) }
-            .setNegativeButton("No") { _, _ -> restartWithSpec(null, onFinish) }
-            .setCancelable(false)
-            .show()
-    }
-
-    /** Step 3 — Selezione apertura da riusare (solo DOOR / FRENCH_DOOR). */
-    private fun showOpeningPickerForRestart(result: JSObject, savedRecord: RoomRecord?, onFinish: () -> Unit) {
-        data class Entry(val label: String, val spec: LinkedOpeningSpec)
-
-        val walls = result.getJSONArray("walls")
-        val entries = mutableListOf<Entry>()
-        if (walls != null) {
-            for (i in 0 until walls.length()) {
-                val wall = walls.optJSONObject(i) ?: continue
-                val ops  = wall.optJSONArray("openings") ?: continue
-                for (j in 0 until ops.length()) {
-                    val op      = ops.optJSONObject(j) ?: continue
-                    val kindStr = op.optString("kind")
-                    if (kindStr != "DOOR" && kindStr != "FRENCH_DOOR") continue
-                    val kind   = runCatching { OpeningKind.valueOf(kindStr) }.getOrNull() ?: continue
-                    val w      = op.optDouble("width",  kind.defaultWidth.toDouble()).toFloat()
-                    val h      = op.optDouble("height", kind.defaultHeight.toDouble()).toFloat()
-                    val b      = op.optDouble("bottom", kind.defaultBottom.toDouble()).toFloat()
-                    val label  = "${kind.label} ${String.format("%.2f", w)}m × ${String.format("%.2f", h)}m (muro $i)"
-                    entries.add(Entry(label, LinkedOpeningSpec(
-                        sourceRoomId   = savedRecord?.id   ?: "",
-                        sourceRoomName = savedRecord?.name ?: "Stanza precedente",
-                        kind = kind, width = w, height = h, bottom = b
-                    )))
+            .setPositiveButton("Sì") { _, _ ->
+                val next = Intent(this, ScanningActivity::class.java).apply {
+                    putExtra("enableDepth", intent.getBooleanExtra("enableDepth", true))
+                    putExtra("isContinuation", true)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
+                startActivity(next)
+                onFinish()
             }
-        }
-
-        if (entries.isEmpty()) { restartWithSpec(null, onFinish); return }
-
-        var selected = 0
-        AlertDialog.Builder(this)
-            .setTitle("Seleziona apertura di collegamento")
-            .setSingleChoiceItems(entries.map { it.label }.toTypedArray(), 0) { _, which -> selected = which }
-            .setPositiveButton("Usa questa") { _, _ -> restartWithSpec(entries[selected].spec, onFinish) }
-            .setNegativeButton("Senza collegamento") { _, _ -> restartWithSpec(null, onFinish) }
+            .setNegativeButton("No") { _, _ ->
+                // Sessione terminata esplicitamente → al prossimo startScan() i dati vengono rimossi
+                getSharedPreferences("hub_session", android.content.Context.MODE_PRIVATE)
+                    .edit().putBoolean("sessionEnded", true).apply()
+                Log.d("HUB_DIAG", "showContinueScanDialog: No → sessionEnded=true")
+                onFinish()
+            }
             .setCancelable(false)
             .show()
-    }
-
-    /** Riavvia ScanningActivity (con o senza spec). onFinish() chiude l'Activity corrente. */
-    private fun restartWithSpec(spec: LinkedOpeningSpec?, onFinish: () -> Unit) {
-        val enableDepth = intent.getBooleanExtra("enableDepth", true)
-        val next = Intent(this, ScanningActivity::class.java).apply {
-            putExtra("enableDepth", enableDepth)
-            spec?.putInto(this)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        startActivity(next)
-        onFinish()
     }
 
     // ── buildResult ───────────────────────────────────────────────────────────
@@ -1863,9 +1968,26 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
 
         val exportPolygon = RoomRectifier.rectify(finalPolygon).polygon
         val rm = roomModel ?: RoomModel.fromPolygon(exportPolygon, wallHeightPreview)
-        val exportData    = RoomExportData.fromRoomModel(rm)
+        val exportDataBase = RoomExportData.fromRoomModel(rm)
+        val roomPoly = exportPolygon.map { Pair(it[0], it[2]) }
+        val exportData = RoomExportData(
+            walls        = exportDataBase.walls,
+            dimensions   = exportDataBase.dimensions,
+            roomPolygons = listOf(currentRoomName to roomPoly)
+        )
         val roomDim       = exportData.dimensions
         val floorPlanPath = FloorPlanExporter.export(exportData, cacheDir)
+        if (floorPlanPath != null) {
+            val exportDataForPdf = exportData
+            Thread {
+                val pdfPath = FloorPlanExporter.exportPdf(exportDataForPdf, cacheDir)
+                if (pdfPath != null) {
+                    getSharedPreferences("hub_session", MODE_PRIVATE)
+                        .edit().putString("lastPdfPath", pdfPath).apply()
+                    Log.d("HUB_DIAG", "PDF A3 generato in background: $pdfPath")
+                }
+            }.start()
+        }
         val glbPath       = GlbExporter.export(exportData, cacheDir)
 
         val wallsArr = JSArray().also { arr ->

@@ -50,11 +50,74 @@ object RoomHistoryManager {
         }
     }
 
-    /** Rimuove un record per id. No-op se non trovato. */
+    /**
+     * Aggiorna bilateralmente il metadata di un'apertura in una stanza già salvata.
+     * Usato quando la stanza adiacente collega una porta precedentemente PENDING.
+     * Aggiorna sia hub_rooms.json che hub_room_{id}.json.
+     */
+    fun updateOpeningMetadata(
+        context:        Context,
+        roomId:         String,
+        openingId:      String,
+        linkedRoomId:   String,
+        linkedRoomName: String
+    ) {
+        try {
+            // 1. Aggiorna hub_room_{id}.json (dati geometrici completi)
+            val roomData = loadRoomData(context, roomId)
+            if (roomData != null) {
+                val walls = roomData.optJSONArray("walls")
+                if (walls != null) {
+                    for (i in 0 until walls.length()) {
+                        val wall = walls.optJSONObject(i) ?: continue
+                        val ops  = wall.optJSONArray("openings") ?: continue
+                        for (j in 0 until ops.length()) {
+                            val op = ops.optJSONObject(j) ?: continue
+                            if (op.optString("id") == openingId) {
+                                op.put("isInternal",       true)
+                                op.put("connectionStatus", ConnectionStatus.LINKED.name)
+                                op.put("linkedRoomId",     linkedRoomId)
+                                op.put("connectionLabel",  linkedRoomName)
+                            }
+                        }
+                    }
+                }
+                File(context.filesDir, "hub_room_$roomId.json").writeText(roomData.toString())
+            }
+
+            // 2. Aggiorna hub_rooms.json (indice stanze)
+            val list = loadRaw(context).toMutableList()
+            val idx  = list.indexOfFirst { it.id == roomId }
+            if (idx >= 0) {
+                val record      = list[idx]
+                val newOpenings = record.openings.toMutableList()
+                val existingIdx = newOpenings.indexOfFirst { it.openingId == openingId }
+                val wallId      = newOpenings.getOrNull(existingIdx)?.wallId ?: ""
+                val newMeta = OpeningMetadata(
+                    openingId        = openingId,
+                    wallId           = wallId,
+                    isInternal       = true,
+                    linkedRoomId     = linkedRoomId,
+                    connectionLabel  = linkedRoomName,
+                    connectionStatus = ConnectionStatus.LINKED
+                )
+                if (existingIdx >= 0) newOpenings[existingIdx] = newMeta
+                else newOpenings.add(newMeta)
+                list[idx] = record.copy(openings = newOpenings)
+                writeAll(context, list)
+            }
+            Log.d(TAG, "updateOpeningMetadata roomId=$roomId openingId=$openingId linkedTo=$linkedRoomId")
+        } catch (e: Exception) {
+            Log.e(TAG, "updateOpeningMetadata failed: ${e.message}", e)
+        }
+    }
+
+    /** Rimuove un record per id e cancella il file geometrico associato. No-op se non trovato. */
     fun delete(context: Context, id: String) {
         try {
             val list = loadRaw(context).filter { it.id != id }
             writeAll(context, list)
+            File(context.filesDir, "hub_room_$id.json").delete()
             Log.d(TAG, "deleted room id=$id")
         } catch (e: Exception) {
             Log.e(TAG, "delete failed: ${e.message}", e)
