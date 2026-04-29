@@ -6,17 +6,26 @@ import com.google.ar.core.Plane
 import com.google.ar.core.TrackingState
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.ceil
+import kotlin.math.max
 
 /**
- * Renderizza i piani ARCore rilevati con stile ispirato a RoomPlan:
- *  - Fill quasi invisibile (alpha ~0.08) — camera feed sempre leggibile
- *  - Bordi BIANCHI luminosi (alpha ~0.90, 2px) — l'unico elemento visivo forte
- *  - Piani in PAUSED: bordi gialli attenuati
- *  - Nessun colore solido. Minimalismo.
+ * Disegna una griglia di celle su ogni piano ARCore rilevato (pavimento + pareti + soffitto).
+ *
+ * Celle 30×30cm per default.
+ * Colore:
+ *  - Pavimento/soffitto (HORIZONTAL): teal
+ *  - Pareti (VERTICAL):               blu
+ *  - Piano in PAUSED:                 grigio attenuato
+ *
+ * L'effetto progressivo emerge naturalmente man mano che ARCore rileva nuovi piani.
  */
 class PlaneOverlayRenderer {
 
     companion object {
+        private const val GRID_CELL_M  = 0.30f   // dimensione cella griglia (30cm)
+        private const val MAX_STEPS    = 40       // limite celle per asse (evita lag su piani grandi)
+
         private const val VERT = """
             attribute vec4 a_Position;
             uniform mat4 u_VP;
@@ -37,8 +46,8 @@ class PlaneOverlayRenderer {
     private var aPosition = 0
     private var uVP       = 0
     private var uColor    = 0
-    private val vp = FloatArray(16)
-    private var ready = false
+    private val vp        = FloatArray(16)
+    private var ready     = false
 
     fun init() {
         val vs = compile(GLES20.GL_VERTEX_SHADER, VERT)
@@ -54,16 +63,16 @@ class PlaneOverlayRenderer {
     }
 
     /**
-     * Disegna i piani ARCore come fill quasi-trasparente + bordi bianchi.
      * Chiamare sul GL thread dopo backgroundRenderer.draw(frame).
+     * Passa tutti i piani ARCore (HORIZONTAL + VERTICAL).
      */
     fun draw(planes: Collection<Plane>, viewMatrix: FloatArray, projMatrix: FloatArray) {
         if (!ready) return
         Matrix.multiplyMM(vp, 0, projMatrix, 0, viewMatrix, 0)
 
-        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glUseProgram(program)
         GLES20.glUniformMatrix4fv(uVP, 1, false, vp, 0)
 
@@ -73,58 +82,62 @@ class PlaneOverlayRenderer {
             val halfW = plane.extentX / 2f
             val halfH = plane.extentZ / 2f
             if (halfW < 0.05f || halfH < 0.05f) continue
-
-            // 4 angoli del piano in coordinate locali → world
-            val pose = plane.centerPose
-            val world = arrayOf(
-                floatArrayOf(-halfW, 0f, -halfH),
-                floatArrayOf( halfW, 0f, -halfH),
-                floatArrayOf( halfW, 0f,  halfH),
-                floatArrayOf(-halfW, 0f,  halfH)
-            ).map { pose.transformPoint(it) }
-
-            val buf = ByteBuffer.allocateDirect(4 * 4 * 4)
-                .order(ByteOrder.nativeOrder()).asFloatBuffer()
-            world.forEach { v -> buf.put(v[0]); buf.put(v[1]); buf.put(v[2]); buf.put(1f) }
-            buf.rewind()
-
-            val isTracking = plane.trackingState == TrackingState.TRACKING
-
-            // ── Fill quasi invisibile ────────────────────────────────────────
-            val fillAlpha = when {
-                !isTracking -> 0.03f
-                plane.type == Plane.Type.VERTICAL -> 0.07f
-                else -> 0.05f
-            }
-            GLES20.glUniform4f(uColor, 0.95f, 0.97f, 1.0f, fillAlpha)
-            GLES20.glEnableVertexAttribArray(aPosition)
-            GLES20.glVertexAttribPointer(aPosition, 4, GLES20.GL_FLOAT, false, 0, buf)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
-
-            // ── Bordi con effetto glow (alone largo + linea centrale luminosa) ──
-            if (isTracking) {
-                // Alone esterno (simula blur/glow)
-                GLES20.glUniform4f(uColor, 1.0f, 1.0f, 1.0f, 0.18f)
-                GLES20.glLineWidth(7.0f)
-                GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, 4)
-                // Alone intermedio
-                GLES20.glUniform4f(uColor, 1.0f, 1.0f, 1.0f, 0.40f)
-                GLES20.glLineWidth(4.0f)
-                GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, 4)
-                // Linea centrale netta
-                GLES20.glUniform4f(uColor, 1.0f, 1.0f, 1.0f, 0.92f)
-                GLES20.glLineWidth(2.0f)
-                GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, 4)
-            } else {
-                GLES20.glUniform4f(uColor, 0.95f, 0.82f, 0.30f, 0.45f)
-                GLES20.glLineWidth(1.5f)
-                GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, 4)
-            }
-            GLES20.glDisableVertexAttribArray(aPosition)
+            drawPlaneGrid(plane, halfW, halfH)
         }
 
-        GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    // ── Grid drawing ──────────────────────────────────────────────────────────
+
+    private fun drawPlaneGrid(plane: Plane, halfW: Float, halfH: Float) {
+        val pose       = plane.centerPose
+        val isTracking = plane.trackingState == TrackingState.TRACKING
+
+        val stepsX = max(1, ceil(plane.extentX / GRID_CELL_M).toInt()).coerceAtMost(MAX_STEPS)
+        val stepsZ = max(1, ceil(plane.extentZ / GRID_CELL_M).toInt()).coerceAtMost(MAX_STEPS)
+
+        // vertCount = 2 endpoints × (stepsX+1 linee Z + stepsZ+1 linee X)
+        val vertCount = 2 * (stepsX + 1 + stepsZ + 1)
+        val verts     = FloatArray(vertCount * 4)  // XYZW per vertice
+        var idx       = 0
+
+        // Linee parallele a Z (variando X)
+        for (i in 0..stepsX) {
+            val x  = -halfW + i * (plane.extentX / stepsX)
+            val p0 = pose.transformPoint(floatArrayOf(x, 0f, -halfH))
+            val p1 = pose.transformPoint(floatArrayOf(x, 0f,  halfH))
+            verts[idx++]=p0[0]; verts[idx++]=p0[1]; verts[idx++]=p0[2]; verts[idx++]=1f
+            verts[idx++]=p1[0]; verts[idx++]=p1[1]; verts[idx++]=p1[2]; verts[idx++]=1f
+        }
+
+        // Linee parallele a X (variando Z)
+        for (j in 0..stepsZ) {
+            val z  = -halfH + j * (plane.extentZ / stepsZ)
+            val p0 = pose.transformPoint(floatArrayOf(-halfW, 0f, z))
+            val p1 = pose.transformPoint(floatArrayOf( halfW, 0f, z))
+            verts[idx++]=p0[0]; verts[idx++]=p0[1]; verts[idx++]=p0[2]; verts[idx++]=1f
+            verts[idx++]=p1[0]; verts[idx++]=p1[1]; verts[idx++]=p1[2]; verts[idx++]=1f
+        }
+
+        val buf = ByteBuffer.allocateDirect(verts.size * 4)
+            .order(ByteOrder.nativeOrder()).asFloatBuffer()
+        buf.put(verts); buf.rewind()
+
+        val alpha = if (isTracking) 0.60f else 0.20f
+        when {
+            !isTracking                    -> GLES20.glUniform4f(uColor, 0.55f, 0.55f, 0.55f, alpha)
+            plane.type == Plane.Type.VERTICAL
+                                           -> GLES20.glUniform4f(uColor, 0.20f, 0.65f, 1.00f, alpha)  // blu: pareti
+            else                           -> GLES20.glUniform4f(uColor, 0.15f, 1.00f, 0.70f, alpha)  // teal: pavimento
+        }
+
+        GLES20.glEnableVertexAttribArray(aPosition)
+        GLES20.glVertexAttribPointer(aPosition, 4, GLES20.GL_FLOAT, false, 0, buf)
+        GLES20.glLineWidth(1.5f)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, vertCount)
+        GLES20.glDisableVertexAttribArray(aPosition)
     }
 
     private fun compile(type: Int, src: String) = GLES20.glCreateShader(type).also {

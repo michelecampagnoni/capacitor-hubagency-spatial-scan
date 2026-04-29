@@ -20,4 +20,7 @@ export class SpatialScanWeb extends WebPlugin implements SpatialScanPlugin {
   async getScanStatus(): Promise<ScanStatus> {
     throw this.unavailable('SpatialScan non disponibile su web.');
   }
+  async exportPdf(): Promise<{ pdfPath: string }> {
+    throw this.unavailable('SpatialScan non disponibile su web.');
+  }
 }
