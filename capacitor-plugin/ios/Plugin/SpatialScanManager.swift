@@ -152,31 +152,40 @@ class SpatialScanManager: NSObject {
     /// Esegue solo housekeeping (isScanning=false, scanningVC=nil).
     /// NON emette onScanComplete: sarà il Composer a farlo via composerDidConfirm().
     func beginComposerPhase() {
-        NSLog("[HUB_DIAG] SpatialScanManager: beginComposerPhase — onScanComplete soppresso, attesa Composer")
-        scanningVC    = nil
+        NSLog("[HUB_DIAG] SpatialScanManager: beginComposerPhase — stopCallback tenuto, attesa Composer")
+        scanningVC      = nil
         composerPending = true
-        isScanning    = false
-        if let cb = stopCallback {
-            stopCallback = nil
-            cb(["success": false, "error": "COMPOSER_PENDING"])
-        }
+        isScanning      = false
+        // stopCallback NON viene fired qui — il Composer lo risolve via composerDidConfirm/Cancel
     }
 
     /// Chiamato da RoomComposerViewController.confirmSave() dopo l'export combinato.
-    /// Resetta composerPending ed emette onScanComplete con il risultato finale.
+    /// Se stopScan() è in attesa (stopCallback), risolve la promise JS con il risultato combinato.
+    /// Altrimenti emette l'evento onScanComplete (path listener).
     func composerDidConfirm(_ result: [String: Any]) {
-        NSLog("[HUB_DIAG] SpatialScanManager: composerDidConfirm — firing notifyListeners(onScanComplete)")
+        NSLog("[HUB_DIAG] SpatialScanManager: composerDidConfirm — result ricevuto")
         composerPending = false
-        pendingResult   = result
-        onScanComplete?(result)
+        if let cb = stopCallback {
+            NSLog("[HUB_DIAG] SpatialScanManager: composerDidConfirm — resolving stopCallback")
+            stopCallback = nil
+            cb(result)
+        } else {
+            NSLog("[HUB_DIAG] SpatialScanManager: composerDidConfirm — firing onScanComplete")
+            pendingResult = result
+            onScanComplete?(result)
+        }
     }
 
     /// Chiamato quando il Composer viene annullato/chiuso senza conferma oppure
-    /// quando l'export combinato fallisce. Resetta composerPending senza emettere eventi.
+    /// quando l'export combinato fallisce.
     func composerDidCancel() {
         guard composerPending else { return }
         NSLog("[HUB_DIAG] SpatialScanManager: composerDidCancel — composerPending reset")
         composerPending = false
+        if let cb = stopCallback {
+            stopCallback = nil
+            cb(["success": false, "error": "COMPOSER_CANCELLED"])
+        }
     }
 
     // ── cancelScan ───────────────────────────────────────────────
