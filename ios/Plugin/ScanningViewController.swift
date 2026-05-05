@@ -995,12 +995,14 @@ class ScanningViewController: UIViewController, ARSessionDelegate, GLKViewDelega
             ?? FileManager.default.temporaryDirectory
 
         var result: [String: Any] = [
-            "success":       true,
-            "roomId":        realRoomId,
-            "area":          area,
-            "wallCount":     wallsJson.count,
-            "floorPlanPath": "",
-            "glbPath":       ""
+            "success":        true,
+            "roomId":         realRoomId,
+            "walls":          wallsJson,
+            "roomDimensions": dimsJson,
+            "area":           area,
+            "wallCount":      wallsJson.count,
+            "floorPlanPath":  "",
+            "glbPath":        ""
         ]
 
         DispatchQueue.main.async {
