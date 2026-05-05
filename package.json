@@ -8,8 +8,11 @@
   "files": [
     "android/src/main/**",
     "android/build.gradle",
+    "ios/",
     "dist/",
-    "src/"
+    "src/",
+    "Package.swift",
+    "capacitor-hubagency-spatial-scan.podspec"
   ],
   "keywords": ["capacitor", "plugin", "android", "arcore", "3d-scan", "floor-plan"],
   "scripts": {
