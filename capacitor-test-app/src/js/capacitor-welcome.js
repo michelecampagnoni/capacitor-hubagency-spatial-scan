@@ -132,7 +132,7 @@ window.customElements.define(
       .header {
         background: #03040e;
         border-bottom: 1px solid rgba(20, 215, 255, 0.25);
-        padding: 24px 16px 16px;
+        padding: max(env(safe-area-inset-top), 24px) 16px 16px;
         text-align: center;
       }
       .header h1 {
