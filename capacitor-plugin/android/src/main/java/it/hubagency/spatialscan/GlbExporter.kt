@@ -303,7 +303,8 @@ object GlbExporter {
     ): Triple<Int, Int, Int> {
         val cross = (poly[b].first - poly[a].first) * (poly[c].second - poly[a].second) -
                     (poly[b].second - poly[a].second) * (poly[c].first - poly[a].first)
-        return if (cross >= 0f) Triple(a, b, c) else Triple(a, c, b)
+        // cross < 0  →  3D Y-component (+Y) is positive  →  front-facing from above
+    return if (cross < 0f) Triple(a, b, c) else Triple(a, c, b)
     }
 
     /** Test punto-in-triangolo (XZ plane). */
@@ -347,7 +348,7 @@ object GlbExporter {
             if (hasFloor) append(""",{"attributes":{"POSITION":3,"NORMAL":4},"indices":5,"material":1,"mode":4}""")
         }
 
-        val materials = """[{"name":"Wall","pbrMetallicRoughness":{"baseColorFactor":[0.88,0.88,0.90,1.0],"metallicFactor":0.05,"roughnessFactor":0.85},"doubleSided":true},{"name":"Floor","pbrMetallicRoughness":{"baseColorFactor":[0.60,0.60,0.62,1.0],"metallicFactor":0.02,"roughnessFactor":0.95},"doubleSided":false}]"""
+        val materials = """[{"name":"Wall","pbrMetallicRoughness":{"baseColorFactor":[0.88,0.88,0.90,1.0],"metallicFactor":0.05,"roughnessFactor":0.85},"doubleSided":true},{"name":"Floor","pbrMetallicRoughness":{"baseColorFactor":[0.60,0.60,0.62,1.0],"metallicFactor":0.02,"roughnessFactor":0.95},"doubleSided":true}]"""
 
         val accessors = buildString {
             // Muri

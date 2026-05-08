@@ -361,9 +361,25 @@ class RoomComposerActivity : Activity() {
         val (combinedPath, combinedGlbPath) = generateCombinedFloorPlan(totalArea)
         Log.d("Composer", "saved newRoom=$newRoomId parent=$parentRoomId combinedPng=$combinedPath glb=$combinedGlbPath area=$totalArea")
 
-        // 4. Notifica JS
+        // 4. Aggiorna pendingResult con i path combinati (mantiene walls/roomDimensions
+        //    della singola stanza così JS non crasha su scanResult.walls.length).
+        val prev = ScanningActivity.pendingResult
+        Log.d("HUB_DIAG", "confirmSave: combinedPath=$combinedPath prevPendingResult=${prev != null} onScanComplete=${ScanningActivity.onScanComplete != null}")
+        if (prev != null && combinedPath != null) {
+            prev.put("floorPlanPath", combinedPath)
+            if (combinedGlbPath != null) prev.put("glbPath", combinedGlbPath)
+            else prev.remove("glbPath")
+            prev.put("combinedFloorPlan", true)
+            Log.d("HUB_DIAG", "confirmSave: pendingResult aggiornato con combinedPath")
+        } else {
+            Log.w("HUB_DIAG", "confirmSave: SKIP pendingResult update — prev=${prev != null} combinedPath=${combinedPath != null}")
+        }
+
+        // 5. Notifica JS (onScanComplete listener — canale secondario)
         if (combinedPath != null) {
-            ScanningActivity.onScanComplete?.invoke(JSObject().apply {
+            val cb = ScanningActivity.onScanComplete
+            Log.d("HUB_DIAG", "confirmSave: firing onScanComplete cb=${cb != null}")
+            cb?.invoke(JSObject().apply {
                 put("success",           true)
                 put("floorPlanPath",     combinedPath)
                 put("combinedFloorPlan", true)
@@ -372,6 +388,8 @@ class RoomComposerActivity : Activity() {
                 put("totalArea",         totalArea)
                 if (combinedGlbPath != null) put("glbPath", combinedGlbPath)
             })
+        } else {
+            Log.w("HUB_DIAG", "confirmSave: combinedPath null, onScanComplete NON fired")
         }
 
         // 4. Dialog "Vuoi scansionare un altro ambiente?"

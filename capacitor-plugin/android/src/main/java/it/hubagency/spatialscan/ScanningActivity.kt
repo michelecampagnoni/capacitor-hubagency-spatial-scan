@@ -1796,7 +1796,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             }
             pendingLinkUpdates.clear()
 
-            onScanComplete?.invoke(result)
             val cb = onScanResult
             if (cb != null) { cb(result); onScanResult = null }
             else pendingResult = result
@@ -1821,6 +1820,9 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     ?: otherRooms.lastOrNull()?.id
 
                 if (anchorRoomId != null) {
+                    // Composer seguirà: NON emettere onScanComplete qui.
+                    // Sarà RoomComposerActivity.confirmSave() a emettere l'evento finale
+                    // con il PNG combinato di tutte le stanze.
                     Log.d("HUB_DIAG", "→ Composer COMPOSE anchor=$anchorRoomId new=${savedRecord.id} linked=${composerRoomId != null}")
                     val next = Intent(this, RoomComposerActivity::class.java).apply {
                         putExtra("parentRoomId", anchorRoomId)
@@ -1836,12 +1838,16 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                     startActivity(next)
                     setResult(RESULT_OK); finish()
                 } else {
-                    // Prima scan in assoluto: nessuna stanza precedente, niente da comporre
+                    // Prima scan in assoluto: nessuna stanza precedente, niente da comporre.
+                    // Emetti onScanComplete con il risultato singola stanza.
                     Log.d("HUB_DIAG", "→ prima scan, showContinueScanDialog diretta")
+                    onScanComplete?.invoke(result)
                     showContinueScanDialog { setResult(RESULT_OK); finish() }
                 }
             } else {
+                // Salvataggio fallito: emetti onScanComplete con l'errore.
                 Log.d("HUB_DIAG", "→ savedRecord null, showContinueScanDialog diretta")
+                onScanComplete?.invoke(result)
                 showContinueScanDialog { setResult(RESULT_OK); finish() }
             }
         }
