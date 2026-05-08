@@ -1796,7 +1796,6 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
             }
             pendingLinkUpdates.clear()
 
-            onScanComplete?.invoke(result)
             val cb = onScanResult
             if (cb != null) { cb(result); onScanResult = null }
             else pendingResult = result
@@ -1833,15 +1832,19 @@ class ScanningActivity : Activity(), GLSurfaceView.Renderer {
                         }
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
+                    // Composer seguirà: NON invocare onScanComplete qui.
+                    // Sarà confirmSave() a farlo con il risultato combined.
                     startActivity(next)
                     setResult(RESULT_OK); finish()
                 } else {
                     // Prima scan in assoluto: nessuna stanza precedente, niente da comporre
                     Log.d("HUB_DIAG", "→ prima scan, showContinueScanDialog diretta")
+                    onScanComplete?.invoke(result)
                     showContinueScanDialog { setResult(RESULT_OK); finish() }
                 }
             } else {
                 Log.d("HUB_DIAG", "→ savedRecord null, showContinueScanDialog diretta")
+                onScanComplete?.invoke(result)
                 showContinueScanDialog { setResult(RESULT_OK); finish() }
             }
         }

@@ -361,18 +361,26 @@ class RoomComposerActivity : Activity() {
         val (combinedPath, combinedGlbPath) = generateCombinedFloorPlan(totalArea)
         Log.d("Composer", "saved newRoom=$newRoomId parent=$parentRoomId combinedPng=$combinedPath glb=$combinedGlbPath area=$totalArea")
 
-        // 4. Notifica JS
-        if (combinedPath != null) {
-            ScanningActivity.onScanComplete?.invoke(JSObject().apply {
-                put("success",           true)
-                put("floorPlanPath",     combinedPath)
-                put("combinedFloorPlan", true)
-                put("newRoomId",         newRoomId)
-                put("parentRoomId",      parentRoomId)
-                put("totalArea",         totalArea)
-                if (combinedGlbPath != null) put("glbPath", combinedGlbPath)
-            })
+        // 4. Aggiorna pendingResult con i path combined (letto da stopScan() in JS)
+        val prev = ScanningActivity.pendingResult
+        if (prev != null && combinedPath != null) {
+            prev.put("floorPlanPath", combinedPath)
+            if (combinedGlbPath != null) prev.put("glbPath", combinedGlbPath)
+            else prev.remove("glbPath")
+            prev.put("combinedFloorPlan", true)
         }
+
+        // 5. Notifica JS tramite onScanComplete listener
+        val cb = ScanningActivity.onScanComplete
+        cb?.invoke(JSObject().apply {
+            put("success",           true)
+            put("floorPlanPath",     combinedPath)
+            put("combinedFloorPlan", true)
+            put("newRoomId",         newRoomId)
+            put("parentRoomId",      parentRoomId)
+            put("totalArea",         totalArea)
+            if (combinedGlbPath != null) put("glbPath", combinedGlbPath)
+        })
 
         // 4. Dialog "Vuoi scansionare un altro ambiente?"
         showContinueScanDialog()
