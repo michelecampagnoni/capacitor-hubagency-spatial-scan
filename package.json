@@ -1,17 +1,18 @@
 {
   "name": "capacitor-hubagency-spatial-scan",
-  "version": "0.1.0",
-  "description": "Capacitor Android plugin for ARCore spatial scanning and floor plan generation",
+  "version": "1.27.2",
+  "description": "Capacitor plugin for ARCore/ARKit spatial scanning and floor plan generation",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
   "files": [
     "android/src/main/**",
     "android/build.gradle",
-    "dist/",
+    "ios/",
+    "Package.swift",
     "src/"
   ],
-  "keywords": ["capacitor", "plugin", "android", "arcore", "3d-scan", "floor-plan"],
+  "keywords": ["capacitor", "plugin", "android", "ios", "arcore", "arkit", "3d-scan", "floor-plan"],
   "scripts": {
     "build": "tsc",
     "verify": "tsc --noEmit"
@@ -26,6 +27,9 @@
   "capacitor": {
     "android": {
       "src": "android"
+    },
+    "ios": {
+      "src": "ios"
     }
   }
 }
