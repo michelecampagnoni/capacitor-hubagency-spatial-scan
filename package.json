@@ -1,6 +1,6 @@
 {
   "name": "capacitor-hubagency-spatial-scan",
-  "version": "1.27.2",
+  "version": "1.27.4",
   "description": "Capacitor plugin for ARCore/ARKit spatial scanning and floor plan generation",
   "main": "dist/esm/index.js",
   "module": "dist/esm/index.js",

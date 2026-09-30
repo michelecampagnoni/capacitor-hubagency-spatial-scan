@@ -389,10 +389,10 @@ object FloorPlanExporter {
         val s = pts.sortedWith(compareBy({ it.x }, { it.y }))
         fun cross(o: PointF, a: PointF, b: PointF) = (a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x)
         val lo = mutableListOf<PointF>()
-        for (p in s) { while (lo.size >= 2 && cross(lo[lo.size-2], lo.last(), p) <= 0) lo.removeLast(); lo.add(p) }
+        for (p in s) { while (lo.size >= 2 && cross(lo[lo.size-2], lo.last(), p) <= 0) lo.removeAt(lo.lastIndex); lo.add(p) }
         val up = mutableListOf<PointF>()
-        for (p in s.reversed()) { while (up.size >= 2 && cross(up[up.size-2], up.last(), p) <= 0) up.removeLast(); up.add(p) }
-        lo.removeLast(); up.removeLast()
+        for (p in s.reversed()) { while (up.size >= 2 && cross(up[up.size-2], up.last(), p) <= 0) up.removeAt(up.lastIndex); up.add(p) }
+        lo.removeAt(lo.lastIndex); up.removeAt(up.lastIndex)
         return lo + up
     }
 }

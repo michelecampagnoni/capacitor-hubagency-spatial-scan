@@ -152,7 +152,7 @@ class RoomBoxEstimator {
 
         // ── 5. Stabilità su finestra scorrevole ───────────────────────────────
         history.addLast(box)
-        if (history.size > STABILITY_WINDOW) history.removeFirst()
+        if (history.size > STABILITY_WINDOW) history.removeAt(0)
         dbgStableCount = history.size
 
         isStable = if (history.size >= STABILITY_WINDOW) {

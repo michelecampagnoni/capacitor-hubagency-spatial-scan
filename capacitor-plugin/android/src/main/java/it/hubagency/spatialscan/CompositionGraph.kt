@@ -118,7 +118,7 @@ object CompositionGraph {
         val queue   = ArrayDeque<String>()
         queue.add(roomId); visited.add(roomId)
         while (queue.isNotEmpty()) {
-            for (neighbor in adj[queue.removeFirst()] ?: emptyList()) {
+            for (neighbor in adj[queue.removeAt(0)] ?: emptyList()) {
                 if (visited.add(neighbor)) queue.add(neighbor)
             }
         }

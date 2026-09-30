@@ -310,7 +310,7 @@ class RoomComposerActivity : Activity() {
 
     private fun pushUndo() {
         undoStack.addLast(Triple(worldOx, worldOz, worldRot))
-        if (undoStack.size > 50) undoStack.removeFirst()
+        if (undoStack.size > 50) undoStack.removeAt(0)
     }
 
     private fun undoLast() {
@@ -438,7 +438,7 @@ class RoomComposerActivity : Activity() {
         val queue  = ArrayDeque<String>()
         queue.add(rootId)
         while (queue.isNotEmpty()) {
-            val id = queue.removeFirst()
+            val id = queue.removeAt(0)
             result.add(id)
             queue.addAll(CompositionGraph.getChildIds(this, id))
         }

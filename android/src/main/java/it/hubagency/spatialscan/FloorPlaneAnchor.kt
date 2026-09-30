@@ -46,7 +46,7 @@ class FloorPlaneAnchor {
 
         // Accumula campioni solo se tracking stabile (evita outlier da pause brevi)
         if (trackingStreak > 5) {
-            if (samples.size >= 60) samples.removeFirst()
+            if (samples.size >= 60) samples.removeAt(0)
             samples.addLast(raw)
         }
 
